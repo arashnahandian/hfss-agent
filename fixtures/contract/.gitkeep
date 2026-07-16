@@ -1,0 +1,2 @@
+# Shared contract-fixture corpus (versioned with the snapshot schema).
+# Consumed by BOTH CIs; the engine pins it as a dev dependency. See System Design §4.

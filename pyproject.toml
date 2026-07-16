@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hfss-agent"
+version = "0.0.0"
+description = "Open capability wrapper for a verification-first MCP agent for Ansys HFSS (read-only, attach-only, zero-egress)."
+readme = "README.md"
+# Python pin held deliberately at 3.10-3.12 per ADR-13 (not PyAEDT's wider
+# wheel-viable range). Encoded here at the packaging level, not just in docs.
+requires-python = ">=3.10,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Arash Nahandian" }]
+keywords = ["hfss", "aedt", "ansys", "mcp", "pyaedt", "rf"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+# Runtime dependencies are added deliberately in later build steps
+# (Step 0.2 onward), not at scaffold time.
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff>=0.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hfss_agent"]
+
+[tool.ruff]
+# Lowest supported interpreter; keeps lint honest against the whole pin range.
+target-version = "py310"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]

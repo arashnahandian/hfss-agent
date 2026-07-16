@@ -1,0 +1,2 @@
+# Boundary suites: import audit, contract purity, snapshot schema validation,
+# graceful-degradation (wrapper works with the engine absent).

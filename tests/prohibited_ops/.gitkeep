@@ -1,0 +1,2 @@
+# Prohibited-operations suite: proves no mutating PyAEDT call is reachable
+# through the tool surface, and no eval/exec/subprocess path exists (ADR-7).

@@ -1,0 +1,2 @@
+# Session-lifecycle suite: attach / reconnect / lost / crash / timeout / stuck
+# call, all against the fake adapter (ADR-10).

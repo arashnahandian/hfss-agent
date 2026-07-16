@@ -1,0 +1,2 @@
+# Schema suites: tool I/O validation + findings-schema rejection tests
+# (malformed / evidence-incomplete findings are refused).
