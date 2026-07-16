@@ -25,7 +25,6 @@ wheels/
 .coverage
 .coverage.*
 htmlcov/
-uv.lock
 
 # --- Secrets / local env (none exist yet; in place before Step 0.2) ---
 .env
