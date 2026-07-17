@@ -28,7 +28,7 @@ classifiers = [
 dependencies = []
 
 [dependency-groups]
-dev = ["ruff>=0.6"]
+dev = ["ruff>=0.6", "pytest>=8"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hfss_agent"]

@@ -26,9 +26,10 @@ wheels/
 .coverage.*
 htmlcov/
 
-# --- Secrets / local env (none exist yet; in place before Step 0.2) ---
+# --- Secrets / local env ---
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
