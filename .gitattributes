@@ -1,0 +1,5 @@
+# Normalize line endings to LF in the repo and on checkout. Both
+# maintainers develop on Windows and CI also runs on Ubuntu — without this,
+# Windows checkouts silently drift to CRLF and diffs/patches break across
+# platforms.
+* text=auto eol=lf
