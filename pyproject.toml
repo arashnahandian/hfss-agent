@@ -25,7 +25,9 @@ classifiers = [
 ]
 # Runtime dependencies are added deliberately in later build steps
 # (Step 0.2 onward), not at scaffold time.
-dependencies = []
+dependencies = [
+    "pydantic>=2",
+]
 
 [dependency-groups]
 dev = ["ruff>=0.6", "pytest>=8"]
