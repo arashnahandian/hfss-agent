@@ -29,6 +29,15 @@ dependencies = [
     "pydantic>=2",
 ]
 
+[project.optional-dependencies]
+# Live AEDT backend for the real adapter (Step 1.2). Declared as an OPTIONAL
+# extra, NOT a core dependency: CI runs `uv sync` WITHOUT this extra on both OS
+# legs, so the Linux leg never pulls PyAEDT's Windows-only subtree and the whole
+# suite runs PyAEDT-free against the FakeAdapter. Ships on PyPI as `pyaedt`;
+# imports as `ansys.aedt.core` (the 1.0 restructure). Pinned to 1.2.* per the
+# approved plan / ADR. Install locally with: uv sync --extra live
+live = ["pyaedt==1.2.*"]
+
 [dependency-groups]
 dev = ["ruff>=0.6", "pytest>=8"]
 
