@@ -10,9 +10,12 @@ independent axes so every downstream module (session, inspect, gating, metrics,
     DATA SHAPES, not faults.
   * ``behavior`` — a per-operation override map (absent key = return canned data)
     that injects a fault, a hang, or an unexpected raise, independently per op.
-
-Per-*call-sequence* scripting (call 1 hangs, call 2 recovers) is a deliberate
-later extension for the session module's reconnect tests, not built here.
+  * ``behavior_sequence`` — a per-operation *sequence* of behaviors consumed one
+    per call, so a test can script "call 1 faults, call 2 recovers" — the exact
+    shape the session module's reconnect/verify tests need. An entry of ``None``
+    means "return canned data on that call"; once the sequence is exhausted the
+    op falls through to the static ``behavior`` (then to canned data), so mixing
+    the two axes is well-defined and existing static scenarios are unaffected.
 """
 
 from __future__ import annotations
@@ -165,4 +168,11 @@ class Scenario:
     )
     solve_state: SolveState = field(default_factory=_default_solve_state)
     solved_data: SolvedData = field(default_factory=_default_solved_data)
+    # Static per-op override: the same behavior on every call to that op.
     behavior: dict[str, OpBehavior] = field(default_factory=dict)
+    # Per-call-sequence override: behavior[i] governs the i-th call to that op
+    # (None = canned data that call). Takes precedence over ``behavior`` while
+    # entries remain; falls through to it once exhausted.
+    behavior_sequence: dict[str, list[OpBehavior | None]] = field(
+        default_factory=dict
+    )

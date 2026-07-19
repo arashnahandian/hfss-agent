@@ -67,11 +67,30 @@ class LiveSession:
         # → never close a session we don't own; aedt_process_id → bind to the
         # already-running process. Param names are 1.2.x-documented but unverified
         # on this machine (see docstring).
+        #
+        # LIMITATION (Phase 5.2 live-verify): on a re-attach this rebinds
+        # ``self._desktop`` to a NEW Desktop and orphans the previous one with NO
+        # release — release_desktop/close_desktop are attach-only-forbidden
+        # (ADR-17 #10, mutation denylist, AST-enforced), so we cannot close it.
+        # Whether the orphaned Desktop leaks a grpc/COM connection or a zombie
+        # process reference is unanswerable without a live session; PyAEDT's
+        # process-level session dedup is expected to reclaim/reuse it. If it
+        # leaks, attach-only-without-release may be incompatible with re-attach
+        # and recovery needs a different mechanism (see docs/pyaedt-coverage.md).
         self._desktop = Desktop(
             new_desktop=False,
             close_on_exit=False,
             aedt_process_id=process_id,
         )
+
+    def reset_bindings(self) -> None:
+        # Drop every cached (project, design) → Hfss handle. Called by
+        # RealAdapter._attach on every (re)attach so a handle bound to a prior
+        # desktop is never read after a new attach. Pure Python state — no AEDT
+        # call, not a release (those are forbidden) — so it cannot close or
+        # mutate a session; it only forgets our cache. The orphaned handles' live
+        # fate is the same Phase 5.2 question as the orphaned Desktop above.
+        self._apps.clear()
 
     def aedt_version(self) -> str:
         # e.g. "2026.1"; identity only, a getter on the attached Desktop.
