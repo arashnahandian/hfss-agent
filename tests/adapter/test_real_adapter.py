@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from hfss_agent.adapter.real import RealAdapter
-from hfss_agent.adapter.results import AdapterCannotEvaluate
+from hfss_agent.adapter.results import AdapterCannotEvaluate, AdapterInternalError
 from hfss_agent.contract import Environment, SolvedData, SolveState
 from hfss_agent.contract.tool_io import SelectionChain, SelectionOption
 
@@ -124,9 +124,15 @@ class FakeSession:
         self.app = app if app is not None else FakeApp()
         self.attached: int | None = None
         self.application_calls: list[tuple[str, str]] = []
+        self.reset_bindings_calls = 0
 
     def attach(self, process_id: int) -> None:
         self.attached = process_id
+
+    def reset_bindings(self) -> None:
+        # Record that RealAdapter invalidated the seam's bindings on (re)attach.
+        # Part 3 asserts re-attach drives this; the real clear's effect is live.
+        self.reset_bindings_calls += 1
 
     def aedt_version(self) -> str:
         return "2026.1"
@@ -400,3 +406,46 @@ def test_attach_resets_selection(process_id: int) -> None:
     adapter.attach(process_id)
     result = adapter.inspect(None)
     assert isinstance(result, AdapterCannotEvaluate)
+
+
+# --- stale-scope fix: downstream reset + incoherent-scope guard --------------
+
+
+def test_reselecting_project_clears_downstream_scope() -> None:
+    # After a full chain, re-selecting the project drops every stage below it, so
+    # _scope can never bind (new_project, stale_design).
+    adapter, _ = _fully_selected()
+    chain = adapter.select("project", "patch_antenna")
+    assert chain.design is None
+    assert chain.solution_type is None
+    assert chain.setup is None
+    assert chain.sweep is None
+    assert chain.variation is None
+
+
+def test_incoherent_scope_is_internal_error_not_cannot_evaluate() -> None:
+    # A design bound with no project can only come from an out-of-order/stale
+    # select — our bug, not the user's process dying (ADR-17 #3). A read over that
+    # scope returns AdapterInternalError, never a user-actionable cannot_evaluate.
+    adapter, session = _adapter()
+    adapter.attach(1)
+    adapter.select("design", "HFSSDesign1")  # no project selected first
+    result = adapter.inspect(None)
+    assert isinstance(result, AdapterInternalError)
+    assert not isinstance(result, AdapterCannotEvaluate)
+    assert "incoherent" in result.detail
+    # It refused to bind: no app was ever requested for the incoherent scope.
+    assert session.application_calls == []
+
+
+def test_scope_is_pure_and_needs_no_live_handle() -> None:
+    # _scope reads only self._selection — it binds no app and touches no handle,
+    # so its logic is fully exercisable license-free (answering the design
+    # question: yes, the scope-computation logic is testable without a live
+    # handle). Drive it directly and confirm no binding was attempted.
+    adapter, session = _adapter()
+    adapter.attach(1)
+    adapter.select("design", "HFSSDesign1")  # incoherent: design without project
+    scope = adapter._scope()
+    assert isinstance(scope, AdapterInternalError)
+    assert session.application_calls == []

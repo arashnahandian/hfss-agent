@@ -34,7 +34,13 @@ from importlib.metadata import version as _package_version
 from typing import Any, Protocol
 
 from hfss_agent.adapter.base import Adapter
-from hfss_agent.adapter.results import AdapterCannotEvaluate, AdapterResult
+from hfss_agent.adapter.results import (
+    AdapterCannotEvaluate,
+    AdapterInternalError,
+    AdapterOutcome,
+    AdapterResult,
+)
+from hfss_agent.adapter.selection import downstream_reset
 from hfss_agent.adapter.watchdog import DEFAULT_TIMEOUT_SECONDS
 from hfss_agent.contract import (
     ComplexSample,
@@ -75,6 +81,7 @@ class LiveSession(Protocol):
     """
 
     def attach(self, process_id: int) -> None: ...
+    def reset_bindings(self) -> None: ...
     def aedt_version(self) -> str: ...
     def pyaedt_version(self) -> str: ...
     def project_names(self) -> list[str]: ...
@@ -142,9 +149,33 @@ class RealAdapter(Adapter):
         except PackageNotFoundError:
             return "0.0.0"
 
-    def _scope(self) -> tuple[str, str] | AdapterCannotEvaluate:
-        """The selected (project, design), or a typed gap if not yet chosen."""
+    def _scope(self) -> tuple[str, str] | AdapterCannotEvaluate | AdapterInternalError:
+        """The selected (project, design), or a typed outcome when it can't bind.
+
+        Two distinct non-bind cases, kept distinct on purpose (ADR-17 #3):
+          * project and/or design simply not chosen yet -> ``cannot_evaluate``,
+            a normal state the caller acts on by selecting;
+          * a design present with NO project -> ``internal_error``. A
+            correctly-ordered selection always sets project before design, so a
+            design with no project means our own selection bookkeeping — or an
+            out-of-order caller — left an incoherent scope. We refuse to bind it
+            rather than mislabel it a user-actionable ``cannot_evaluate``: it is
+            our bug, not the user's process dying.
+
+        These are two separate mechanisms, not one. This guard handles only the
+        design-without-project incoherence above. The different hazard of a stale
+        design left under a re-selected project is prevented upstream by
+        ``downstream_reset`` (which clears the design whenever the project
+        changes), so that shape never reaches this method at all.
+        """
         selection = self._selection
+        if selection.design is not None and selection.project is None:
+            return AdapterInternalError(
+                detail=(
+                    "incoherent selection scope: a design is bound with no "
+                    "project — the adapter's selection state is inconsistent"
+                )
+            )
         if selection.project is None or selection.design is None:
             return AdapterCannotEvaluate(
                 reason="incomplete selection",
@@ -156,6 +187,12 @@ class RealAdapter(Adapter):
 
     def _attach(self, process_id: int) -> AdapterResult[Environment]:
         self._session.attach(process_id)
+        # Re-attach binds a NEW desktop; any Hfss handle the seam cached against a
+        # prior desktop is now stale (the "stray second session handle" the
+        # predecessor project was fragile on). Drop them so the next read binds
+        # fresh against the process we just attached. This is CI-verified via the
+        # seam double; the real clear's live effect is Phase 5.2 (pyaedt-coverage).
+        self._session.reset_bindings()
         self._selection = SelectionChain(process_id=process_id)
         return Environment(
             aedt_version=self._session.aedt_version(),
@@ -184,7 +221,7 @@ class RealAdapter(Adapter):
                 for name in self._session.design_names(selection.project.name)
             ]
         scope = self._scope()
-        if isinstance(scope, AdapterCannotEvaluate):
+        if isinstance(scope, AdapterOutcome):
             return scope
         app = self._session.application(*scope)
         if stage == "setup":
@@ -224,25 +261,41 @@ class RealAdapter(Adapter):
         # No AEDT active-selection mutation (CHANGE-1): record the choice; reads
         # are scoped by binding an app to (project, design) at read time. The only
         # live call is reading solution_type (a getter) when a design is chosen.
+        # Selecting a stage clears everything below it (downstream_reset) so the
+        # cached chain never leaves a stale downstream entry for _scope to bind.
         chain = self._selection
         if stage == "project":
             path = self._session.project_path(choice)
             chain = chain.model_copy(
-                update={"project": Project(name=choice, path=path)}
+                update={
+                    "project": Project(name=choice, path=path),
+                    **downstream_reset("project"),
+                }
             )
         elif stage == "design":
-            chain = chain.model_copy(update={"design": choice})
+            chain = chain.model_copy(
+                update={"design": choice, **downstream_reset("design")}
+            )
             if chain.project is not None:
                 app = self._session.application(chain.project.name, choice)
                 chain = chain.model_copy(
                     update={"solution_type": app.solution_type}
                 )
         elif stage == "setup":
-            chain = chain.model_copy(update={"setup": choice})
+            chain = chain.model_copy(
+                update={"setup": choice, **downstream_reset("setup")}
+            )
         elif stage == "sweep":
-            chain = chain.model_copy(update={"sweep": choice})
+            chain = chain.model_copy(
+                update={"sweep": choice, **downstream_reset("sweep")}
+            )
         elif stage == "variation":
-            chain = chain.model_copy(update={"variation": _resolve_variation(choice)})
+            chain = chain.model_copy(
+                update={
+                    "variation": _resolve_variation(choice),
+                    **downstream_reset("variation"),
+                }
+            )
         self._selection = chain
         return chain
 
@@ -250,7 +303,7 @@ class RealAdapter(Adapter):
         self, sections: list[InspectionSectionName] | None
     ) -> AdapterResult[dict[InspectionSectionName, InspectionSection]]:
         scope = self._scope()
-        if isinstance(scope, AdapterCannotEvaluate):
+        if isinstance(scope, AdapterOutcome):
             return scope
         app = self._session.application(*scope)
         readers = {
@@ -352,13 +405,13 @@ class RealAdapter(Adapter):
 
     def _validate_native(self) -> AdapterResult[NativeValidation]:
         scope = self._scope()
-        if isinstance(scope, AdapterCannotEvaluate):
+        if isinstance(scope, AdapterOutcome):
             return scope
         return NativeValidation(raw_output=self._session.validate_native(*scope))
 
     def _read_solve_state(self) -> AdapterResult[SolveState]:
         scope = self._scope()
-        if isinstance(scope, AdapterCannotEvaluate):
+        if isinstance(scope, AdapterOutcome):
             return scope
         selection = self._selection
         if (
@@ -470,7 +523,7 @@ class RealAdapter(Adapter):
 
     def _read_solved_data(self) -> AdapterResult[SolvedData]:
         scope = self._scope()
-        if isinstance(scope, AdapterCannotEvaluate):
+        if isinstance(scope, AdapterOutcome):
             return scope
         selection = self._selection
         if selection.setup is None or selection.sweep is None:

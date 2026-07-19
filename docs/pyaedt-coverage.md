@@ -73,6 +73,24 @@ fabricating. All `mock-only`:
 - **`list_options("variation")`** returns `AdapterCannotEvaluate` when PyAEDT
   exposes no readable variation list.
 
+### Re-attach handle hygiene (Step 1.3 — `mock-only`)
+
+Introduced with the session module (W-2), which recovers a lost session by having
+the user re-attach — a *second* `attach()` on an already-attached `LiveSession`.
+`RealAdapter._attach` now calls `LiveSession.reset_bindings()` on every (re)attach;
+the **drive** (the adapter invalidating bindings on attach) is CI-verified via the
+seam double, but two effects stay `mock-only` until a live licensed session:
+
+- **`reset_bindings()` clearing `_apps`** — verify that a subsequent
+  `application()` call binds a fresh `Hfss` handle against the newly-attached
+  `Desktop`, so no stale-handle read survives a second `attach()`.
+- **Rebinding `self._desktop`, orphaning the previous one** without
+  `release_desktop`/`close_desktop` (both AST-forbidden, ADR-17 #10) — verify it
+  does not leak a grpc/COM connection or a zombie process reference, i.e. PyAEDT's
+  process-level session dedup reclaims/reuses the prior handle. If it leaks,
+  escalate: attach-only-without-release may be incompatible with re-attach, and
+  re-attach recovery needs a different mechanism.
+
 Read-only / attach-only enforcement lives in
 `tests/prohibited_ops/test_adapter_read_only.py` (AST: no dynamic dispatch, no
 mutating/`release_desktop`/`close_desktop` names) and

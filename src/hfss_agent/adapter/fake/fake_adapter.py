@@ -18,6 +18,7 @@ import threading
 from hfss_agent.adapter.base import Adapter
 from hfss_agent.adapter.fake.scenario import OpBehavior, Scenario
 from hfss_agent.adapter.results import AdapterOutcome, AdapterResult
+from hfss_agent.adapter.selection import downstream_reset
 from hfss_agent.adapter.watchdog import DEFAULT_TIMEOUT_SECONDS
 from hfss_agent.contract import (
     Environment,
@@ -50,6 +51,9 @@ class FakeAdapter(Adapter):
         # A simulated hang parks a worker thread on this event; close() releases
         # any parked threads so a test suite leaks none.
         self._hang_release = threading.Event()
+        # Calls made so far per op — indexes into a scripted behavior_sequence so
+        # "fault on call 1, recover on call 2" resolves per call.
+        self._call_counts: dict[str, int] = {}
 
     def close(self) -> None:
         """Release any worker threads parked in a simulated hang (test hygiene)."""
@@ -62,8 +66,13 @@ class FakeAdapter(Adapter):
 
         Raises the scripted exception (to exercise the watchdog's catch-all) and
         blocks on a hang (to exercise the watchdog's timeout) as side effects.
+        The behavior governing this call comes from the scripted per-call
+        sequence if one is present and unexhausted, otherwise the static per-op
+        override; either way the per-op call index advances by one.
         """
-        behavior: OpBehavior | None = self._scenario.behavior.get(op)
+        index = self._call_counts.get(op, 0)
+        self._call_counts[op] = index + 1
+        behavior = self._behavior_for(op, index)
         if behavior is None:
             return None
         if behavior.raises is not None:
@@ -74,6 +83,14 @@ class FakeAdapter(Adapter):
             self._hang_release.wait()
             return None
         return behavior.fault
+
+    def _behavior_for(self, op: str, index: int) -> OpBehavior | None:
+        """The behavior for the ``index``-th call to ``op``: a scripted sequence
+        entry while one remains, else the static per-op override (else None)."""
+        sequence = self._scenario.behavior_sequence.get(op)
+        if sequence is not None and index < len(sequence):
+            return sequence[index]
+        return self._scenario.behavior.get(op)
 
     def _resolve_variation(self, choice: str) -> Variation:
         for option in self._scenario.options.get("variation", []):
@@ -105,25 +122,39 @@ class FakeAdapter(Adapter):
         injected = self._injected("select")
         if injected is not None:
             return injected
+        # Selecting a stage clears everything below it (downstream_reset), so the
+        # cached chain never carries a stale downstream entry after a re-select.
         chain = self._selection
         if stage == "project":
             chain = chain.model_copy(
                 update={
-                    "project": Project(name=choice, path=self._scenario.project_path)
+                    "project": Project(name=choice, path=self._scenario.project_path),
+                    **downstream_reset("project"),
                 }
             )
         elif stage == "design":
             # Selecting a design also reveals its solution type (read from HFSS).
             chain = chain.model_copy(
-                update={"design": choice, "solution_type": self._scenario.solution_type}
+                update={
+                    "design": choice,
+                    "solution_type": self._scenario.solution_type,
+                    **downstream_reset("design"),
+                }
             )
         elif stage == "setup":
-            chain = chain.model_copy(update={"setup": choice})
+            chain = chain.model_copy(
+                update={"setup": choice, **downstream_reset("setup")}
+            )
         elif stage == "sweep":
-            chain = chain.model_copy(update={"sweep": choice})
+            chain = chain.model_copy(
+                update={"sweep": choice, **downstream_reset("sweep")}
+            )
         elif stage == "variation":
             chain = chain.model_copy(
-                update={"variation": self._resolve_variation(choice)}
+                update={
+                    "variation": self._resolve_variation(choice),
+                    **downstream_reset("variation"),
+                }
             )
         self._selection = chain
         return chain
