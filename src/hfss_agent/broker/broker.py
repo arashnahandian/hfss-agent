@@ -422,7 +422,7 @@ class Broker:
 
 
 def session_routed_specs(session: Session) -> tuple[CapabilitySpec, ...]:
-    """The four session-routed capabilities (approved plan §2), all safe tier.
+    """The five session-routed capabilities (approved plan §2), all safe tier.
 
     Thin delegation ONLY: each handler is the corresponding bound ``Session``
     method — selection order, prerequisites, and fault-to-lifecycle
@@ -457,6 +457,15 @@ def session_routed_specs(session: Session) -> tuple[CapabilitySpec, ...]:
             tier="safe",
             handler=session.get_session_status,
             description="Report session health, selection chain, and suspect flag.",
+        ),
+        CapabilitySpec(
+            name="inspect_design",
+            tier="safe",
+            handler=session.inspect,
+            description=(
+                "Read the requested design inspection sections (all when "
+                "unspecified)."
+            ),
         ),
     )
 
