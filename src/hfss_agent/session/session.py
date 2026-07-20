@@ -57,9 +57,11 @@ from hfss_agent.adapter import (
     AdapterTimeout,
     SessionFault,
 )
+from hfss_agent.contract import InspectionSection
 from hfss_agent.contract.tool_io import (
     AttachResult,
     CannotEvaluate,
+    InspectionSectionName,
     ListSelectionOptionsResult,
     SelectionChain,
     SelectionOption,
@@ -208,6 +210,18 @@ class Session:
         updated ``SessionStatus``; a refusal returns a typed ``CannotEvaluate``."""
         return self._do_select(stage, choice)
 
+    @reconnect_guarded
+    def inspect(
+        self, sections: list[InspectionSectionName] | None = None
+    ) -> dict[InspectionSectionName, InspectionSection] | CannotEvaluate:
+        """Read the requested inspection sections (all eight when ``sections`` is
+        None). Success returns the RAW section dict — deliberately not an
+        ``InspectionResult``: this layer holds no ``template_text`` or provenance,
+        which the W-5 inspect module assembles downstream. A refusal (no usable
+        session, a selection gap, an adapter fault, or a genuine adapter
+        ``cannot_evaluate``) returns a typed ``CannotEvaluate``."""
+        return self._do_inspect(sections)
+
     def get_session_status(self) -> SessionStatus:
         """Report current health, selection chain, and suspect flag. A pure read of
         internal state — makes no adapter call and does NOT trigger verify, so a
@@ -253,7 +267,7 @@ class Session:
                 return surfaced  # escalated post-verify internal error
             # list_selection_options has no SessionStatus arm, so a fault must be
             # reported as a CannotEvaluate naming the new state (ADR-16 deviation).
-            return self._session_fault_refusal()
+            return self._session_fault_refusal("listing")
         if isinstance(outcome, AdapterCannotEvaluate):
             return self._map_adapter_cannot_evaluate(outcome)
         return SelectionOptions(
@@ -261,6 +275,39 @@ class Session:
             options=list(outcome),
             template_text=self._options_template(stage, outcome),
         )
+
+    def _do_inspect(
+        self, sections: list[InspectionSectionName] | None
+    ) -> dict[InspectionSectionName, InspectionSection] | CannotEvaluate:
+        refusal = self._require_usable_session()
+        if refusal is not None:
+            return refusal
+        # Selection-gap check, answered from OUR chain (single source of truth),
+        # never by asking the adapter: without it, a design read on a
+        # nothing-selected session would fall through to the adapter and surface
+        # as "Cannot evaluate via PyAEDT: a project and design must be selected
+        # first" — misattributing a selection gap to a PyAEDT limitation. (The
+        # fake adapter does not scope-check at all, so it would instead wrongly
+        # return canned sections.) This is a selection-gap sibling of
+        # _require_usable_session, not a stage prerequisite.
+        gap = self._require_project_and_design()
+        if gap is not None:
+            return gap
+        outcome = self._adapter.inspect(sections)
+        if isinstance(outcome, SessionFault):
+            surfaced = self._classify_fault(outcome, context="operation")
+            if surfaced is not None:
+                return surfaced  # escalated post-verify internal error
+            # inspect has no SessionStatus arm, so a fault is reported as a
+            # CannotEvaluate naming the new state (ADR-16 deviation), exactly like
+            # list_selection_options.
+            return self._session_fault_refusal("inspection")
+        if isinstance(outcome, AdapterCannotEvaluate):
+            return self._map_adapter_cannot_evaluate(outcome)
+        # Success: the adapter returns the raw section dict, already
+        # watchdog-guarded and sanitized. No wrapper, no template_text, no
+        # provenance here — assembling InspectionResult is the W-5 module's job.
+        return outcome
 
     # --- reconnect-and-verify (no re-attach) ----------------------------------
 
@@ -575,6 +622,27 @@ class Session:
             )
         return self._cannot_evaluate("no usable session", limitation)
 
+    def _require_project_and_design(self) -> CannotEvaluate | None:
+        """None if a project AND design are both selected; otherwise an honest
+        selection-gap refusal. Answered from the session's own chain (the single
+        source of truth), never by asking the adapter.
+
+        The message names the missing selection plainly and mentions neither
+        PyAEDT nor "cannot evaluate": a selection gap is the user's to close by
+        selecting, not a PyAEDT limitation, and saying otherwise would be exactly
+        the dishonest error this product exists to prevent. This is a
+        selection-gap sibling of ``_require_usable_session`` — NOT a stage
+        prerequisite (``_prerequisite_met`` is stage-keyed and inspect is not a
+        selection stage, so it does not fit)."""
+        chain = self._state.chain
+        if chain.project is not None and chain.design is not None:
+            return None
+        return self._cannot_evaluate(
+            "incomplete selection",
+            "a project and a design must both be selected before the design can "
+            "be inspected; select a project, then a design, then retry.",
+        )
+
     def _prerequisite_met(self, stage: SelectionStage) -> bool:
         """Whether ``stage``'s upstream stage is selected (order enforcement)."""
         upstream = _UPSTREAM[stage]
@@ -597,17 +665,22 @@ class Session:
             )
         return self._cannot_evaluate("selection order", limitation)
 
-    def _session_fault_refusal(self) -> CannotEvaluate:
-        """Report (for list_selection_options, which has no SessionStatus arm) that
-        a read faulted and the session transitioned. The transition already ran in
-        ``_classify_fault(context="operation")``."""
+    def _session_fault_refusal(self, operation: str) -> CannotEvaluate:
+        """Report (for a read with no SessionStatus arm — list_selection_options
+        and inspect) that a read faulted and the session transitioned. The
+        transition already ran in ``_classify_fault(context="operation")``.
+
+        ``operation`` is a wrapper-owned label (never untrusted input) naming
+        which read faulted, so each caller gets an accurate message instead of a
+        hardcoded (and, for inspect, wrong) 'during listing'. The limitation body
+        is operation-neutral ('the read'), so only the reason names the op."""
         state_word = (
             "is now unverified (suspect)"
             if self._state.health is _Health.SUSPECT
             else "was lost"
         )
         return self._cannot_evaluate(
-            "session fault during listing",
+            f"session fault during {operation}",
             f"the read did not complete and the session {state_word}; check "
             "get_session_status. The next operation will re-verify, or you may need "
             "to re-attach. PyAEDT could not complete the read.",

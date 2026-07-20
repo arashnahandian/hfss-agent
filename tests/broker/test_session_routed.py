@@ -1,4 +1,4 @@
-"""The four session-routed capabilities dispatched end-to-end over the
+"""The five session-routed capabilities dispatched end-to-end over the
 ``FakeAdapter`` — the pipeline proven against the real ``Session``, not only
 synthetic handlers (approved plan §2/§13). Includes the capture-before proof
 (``select``, the capability that changes the chain) and adapter-fault paths.
@@ -148,4 +148,35 @@ def test_list_options_adapter_fault_audits_cannot_evaluate() -> None:
 
     assert isinstance(result, CannotEvaluate)
     assert sink.records[-1].tool_name == "list_selection_options"
+    assert sink.records[-1].outcome == "cannot_evaluate"
+
+
+def test_inspect_design_dispatches_to_session_inspect_and_audits_safe() -> None:
+    # inspect_design routes to session.inspect and returns the RAW section dict
+    # (no InspectionResult assembly at this layer), audited safe-tier / ok.
+    broker, sink, _session, _fake = session_broker()
+    broker.dispatch("attach", {"process_id": DEFAULT_PID})
+    broker.dispatch("select", {"stage": "project", "choice": "patch_antenna"})
+    broker.dispatch("select", {"stage": "design", "choice": "HFSSDesign1"})
+    result = broker.dispatch("inspect_design", {})
+
+    assert isinstance(result, dict)
+    assert "variables" in result and "available_results" in result
+    record = sink.records[-1]
+    assert record.tool_name == "inspect_design"
+    assert record.risk_tier == "safe"
+    assert record.outcome == "ok"
+
+
+def test_inspect_design_selection_gap_flows_through_as_cannot_evaluate() -> None:
+    # Freshly attached, nothing selected: the session's honest selection-gap
+    # refusal surfaces through dispatch and audits cannot_evaluate — NOT ok, and
+    # NOT a fabricated PyAEDT failure.
+    broker, sink, _session, _fake = session_broker()
+    broker.dispatch("attach", {"process_id": DEFAULT_PID})
+    result = broker.dispatch("inspect_design", {})
+
+    assert isinstance(result, CannotEvaluate)
+    assert "pyaedt" not in result.limitation.lower()
+    assert sink.records[-1].tool_name == "inspect_design"
     assert sink.records[-1].outcome == "cannot_evaluate"
