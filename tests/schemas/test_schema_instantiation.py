@@ -8,6 +8,9 @@ S (as real/imag) survive the trip.
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+from pydantic import BaseModel, ValidationError
+
 from hfss_agent.contract import (
     AuditRecord,
     ComplexSample,
@@ -16,6 +19,7 @@ from hfss_agent.contract import (
     Finding,
     FreshnessEvidence,
     Inspection,
+    InspectionProvenance,
     InspectionSection,
     IntentObject,
     MetricRecord,
@@ -26,6 +30,7 @@ from hfss_agent.contract import (
     SolutionExists,
     SolvedData,
     SolveState,
+    StrictModel,
     Variation,
 )
 
@@ -137,6 +142,50 @@ def test_provenance_record_instantiates(provenance: ProvenanceRecord) -> None:
     assert provenance.variation.values["freq"] == "2.4GHz"
     assert provenance.engine_version is None
     assert provenance.rule_version is None
+
+
+def test_inspection_provenance_instantiates(
+    inspection_provenance: InspectionProvenance,
+) -> None:
+    assert inspection_provenance.read_at.tzinfo is not None
+    # Exactly the five fields — no solve, metric, or judgment slot exists to be
+    # filled in later by something that never solved (ADR-20, gap 11).
+    assert set(InspectionProvenance.model_fields) == {
+        "project",
+        "design",
+        "read_at",
+        "contract_version",
+        "wrapper_version",
+    }
+
+
+def test_inspection_provenance_rejects_naive_read_at() -> None:
+    # A naive instant would silently read as local time; "when was this read"
+    # must never be ambiguous by an offset.
+    with pytest.raises(ValidationError):
+        InspectionProvenance(
+            project="patch_antenna",
+            design="HFSSDesign1",
+            read_at=datetime(2026, 7, 17, 9, 30),
+            contract_version="snapshot-1.0.0",
+            wrapper_version="0.0.0",
+        )
+
+
+def test_inspection_provenance_shares_no_base_with_provenance_record() -> None:
+    """The two are independent types (ADR-20 chose Option B over a shared base).
+
+    Guards the decision itself: a later refactor that factors out a common
+    parent — the natural-looking cleanup — would let a field added for solve
+    provenance appear on a structural read, which is the exact dishonesty this
+    gap closed.
+    """
+    assert not issubclass(InspectionProvenance, ProvenanceRecord)
+    assert not issubclass(ProvenanceRecord, InspectionProvenance)
+    shared = set(InspectionProvenance.__mro__) & set(ProvenanceRecord.__mro__)
+    # StrictModel is contract-wide; anything narrower would be a shared base
+    # specific to these two.
+    assert shared == {StrictModel, BaseModel, object}
 
 
 def test_metric_record_instantiates(provenance: ProvenanceRecord) -> None:

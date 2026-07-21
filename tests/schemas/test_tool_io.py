@@ -28,6 +28,7 @@ from hfss_agent.contract import (
     Environment,
     Finding,
     FreshnessEvidence,
+    InspectionProvenance,
     InspectionSection,
     IntentObject,
     MetricRecord,
@@ -280,10 +281,12 @@ def test_attach_result_routes_success_and_cannot_evaluate(
     assert isinstance(_ATTACH.validate_python(_CANNOT_EVALUATE_DICT), CannotEvaluate)
 
 
-def test_inspect_result_routes_cannot_evaluate(provenance: ProvenanceRecord) -> None:
+def test_inspect_result_routes_cannot_evaluate(
+    inspection_provenance: InspectionProvenance,
+) -> None:
     ok = InspectionResult(
         sections={"variables": InspectionSection(data={"w": "2mm"}, read_status="ok")},
-        provenance=provenance,
+        provenance=inspection_provenance,
         template_text="[inspect] variables",
     )
     assert isinstance(_INSPECT.validate_python(ok.model_dump()), InspectionResult)
@@ -291,13 +294,29 @@ def test_inspect_result_routes_cannot_evaluate(provenance: ProvenanceRecord) -> 
 
 
 def test_inspection_result_rejects_unknown_section_key(
-    provenance: ProvenanceRecord,
+    inspection_provenance: InspectionProvenance,
 ) -> None:
     # The Literal-typed dict key means only real section names are accepted.
     with pytest.raises(ValidationError):
         InspectionResult(
             sections={"not_a_section": InspectionSection(data=None, read_status="ok")},
-            provenance=provenance,
+            provenance=inspection_provenance,
+            template_text="x",
+        )
+
+
+def test_inspection_result_rejects_provenance_record(
+    provenance: ProvenanceRecord,
+) -> None:
+    """A structural read may not borrow solve provenance (ADR-20, gap 11).
+
+    ProvenanceRecord's extra solve fields are rejected by ``extra="forbid"``, so
+    the swap is enforced by the schema rather than by reviewer vigilance.
+    """
+    with pytest.raises(ValidationError):
+        InspectionResult(
+            sections={},
+            provenance=provenance.model_dump(),
             template_text="x",
         )
 

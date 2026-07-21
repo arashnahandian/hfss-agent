@@ -40,7 +40,10 @@ from hfss_agent.contract.design_snapshot import (
 from hfss_agent.contract.finding import Applicability, Finding
 from hfss_agent.contract.intent_object import IntentObject
 from hfss_agent.contract.metric_record import MetricRecord
-from hfss_agent.contract.provenance_record import ProvenanceRecord
+from hfss_agent.contract.provenance_record import (
+    InspectionProvenance,
+    ProvenanceRecord,
+)
 
 __all__ = [
     # Six §2 schemas
@@ -76,4 +79,6 @@ __all__ = [
     "SolvedData",
     # Finding sub-model
     "Applicability",
+    # Provenance for a structural read, which has no solve behind it (ADR-20)
+    "InspectionProvenance",
 ]
