@@ -359,14 +359,12 @@ def test_preflight_and_process_schemas_construct() -> None:
         processes=[
             AedtProcess(
                 process_id=4321,
-                aedt_version="2026.1",
                 grpc_port=50051,
-                open_projects=["patch_antenna"],
             )
         ],
         template_text="[processes] 1 running",
     )
-    assert processes.processes[0].open_projects == ["patch_antenna"]
+    assert processes.processes[0].process_id == 4321
 
 
 def test_session_and_selection_schemas_construct(variation: Variation) -> None:

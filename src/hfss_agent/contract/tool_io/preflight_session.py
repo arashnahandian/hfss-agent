@@ -51,12 +51,15 @@ class PreflightReport(StrictModel):
 
 
 class AedtProcess(StrictModel):
-    """One running AEDT process discovered by W-2 (§3)."""
+    """One running AEDT process a user can attach to via ``attach(process_id)``.
+
+    Process discovery is deferred to a future step — it is not W-2 in the MVP
+    (ADR-18 decision 1), so this schema has no producer today. It carries only
+    what a read-only listing can honestly supply.
+    """
 
     process_id: int
-    aedt_version: str
     grpc_port: int | None = None
-    open_projects: list[UntrustedStr]  # HFSS-sourced names → untrusted
 
 
 class AedtProcessList(StrictModel):
