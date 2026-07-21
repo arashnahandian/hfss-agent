@@ -107,7 +107,7 @@ def _snapshot(variation: Variation) -> DesignSnapshot:
             },
         ),
         intent=IntentObject(
-            target_frequency=2.4e9,
+            target_frequency_hz=2.4e9,
             threshold_type="s11",
             threshold_value=-10.0,
         ),
@@ -204,7 +204,7 @@ def test_metric_record_instantiates(provenance: ProvenanceRecord) -> None:
 
 def test_intent_object_instantiates() -> None:
     intent = IntentObject(
-        target_frequency=2.4e9,
+        target_frequency_hz=2.4e9,
         threshold_type="vswr",
         threshold_value=2.0,
     )

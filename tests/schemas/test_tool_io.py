@@ -421,7 +421,7 @@ def test_validation_and_verified_result_schemas_construct(
 
 def test_record_schemas_construct() -> None:
     intent = IntentObject(
-        target_frequency=2.4e9, threshold_type="s11", threshold_value=-10.0
+        target_frequency_hz=2.4e9, threshold_type="s11", threshold_value=-10.0
     )
     state = DesignIntentState(intent=intent, template_text="[intent] set")
     assert state.intent == intent
@@ -462,7 +462,7 @@ def test_request_schemas_construct() -> None:
     assert (
         ComputeMetricsRequest(
             intent=IntentObject(
-                target_frequency=2.4e9, threshold_type="vswr", threshold_value=2.0
+                target_frequency_hz=2.4e9, threshold_type="vswr", threshold_value=2.0
             )
         ).intent.threshold_type
         == "vswr"

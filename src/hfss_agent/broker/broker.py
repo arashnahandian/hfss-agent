@@ -486,10 +486,10 @@ def intent_capabilities(
     """
 
     def set_design_intent(
-        target_frequency: float, threshold_type: str, threshold_value: float
+        target_frequency_hz: float, threshold_type: str, threshold_value: float
     ) -> DesignIntentState:
         intent = IntentObject(
-            target_frequency=target_frequency,
+            target_frequency_hz=target_frequency_hz,
             threshold_type=threshold_type,  # type: ignore[arg-type]
             threshold_value=threshold_value,
         )
@@ -616,12 +616,13 @@ def audit_capabilities(log_path: str) -> tuple[CapabilitySpec, ...]:
 
 
 def _intent_summary(intent: IntentObject) -> str:
-    """Deterministic intent wording. The Hz unit is STATED because the schema
-    does not pin one (gap 6, pending contract amendment) — a rendered number
-    without its assumed unit would invite misreading."""
+    """Deterministic intent wording. The Hz unit is rendered alongside the
+    number because a bare number invites misreading; the unit is no longer
+    merely an assumption stated here — the schema pins it in the field name
+    (gap 6, amended)."""
     return (
-        f"target_frequency={intent.target_frequency} Hz (Hz assumed; the "
-        f'schema does not pin a unit), threshold_type="{intent.threshold_type}"'
+        f"target_frequency_hz={intent.target_frequency_hz} Hz, "
+        f'threshold_type="{intent.threshold_type}"'
         f", threshold_value={intent.threshold_value}"
     )
 

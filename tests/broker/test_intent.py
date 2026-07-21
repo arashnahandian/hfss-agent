@@ -15,7 +15,7 @@ from hfss_agent.broker.files import BrokerFileError, IntentStore
 from hfss_agent.contract.tool_io import DesignIntentState
 
 _SET_ARGS: dict[str, object] = {
-    "target_frequency": 2.4e9,
+    "target_frequency_hz": 2.4e9,
     "threshold_type": "s11",
     "threshold_value": -10.0,
 }
@@ -27,7 +27,7 @@ def test_set_get_clear_roundtrip_through_dispatch(tmp_path: Path) -> None:
     set_state = broker.dispatch("set_design_intent", dict(_SET_ARGS))
     assert isinstance(set_state, DesignIntentState)
     assert set_state.intent is not None
-    assert set_state.intent.target_frequency == 2.4e9
+    assert set_state.intent.target_frequency_hz == 2.4e9
 
     got = broker.dispatch("get_design_intent")
     assert isinstance(got, DesignIntentState)
@@ -112,16 +112,18 @@ def test_set_with_detached_session_records_the_empty_chain(
     assert "no selection (no session attached)" in state.template_text
 
 
-def test_set_and_get_templates_state_the_hz_assumption(tmp_path: Path) -> None:
-    # Gap 6: the schema does not pin target_frequency's unit, so the template
-    # must say what unit the wrapper assumes rather than render a bare number.
+def test_set_and_get_templates_render_the_frequency_with_its_unit(
+    tmp_path: Path,
+) -> None:
+    # Gap 6 (amended): the schema now pins the unit in the field name, so the
+    # template renders name + unit rather than disclaiming an assumption.
     broker, _sink, _store, _session = intent_broker(tmp_path)
     set_state = broker.dispatch("set_design_intent", dict(_SET_ARGS))
     got = broker.dispatch("get_design_intent")
     for state in (set_state, got):
         assert isinstance(state, DesignIntentState)
-        assert "Hz" in state.template_text
-        assert "does not pin a unit" in state.template_text
+        assert "target_frequency_hz=2400000000.0 Hz" in state.template_text
+        assert "does not pin a unit" not in state.template_text
 
 
 def test_corrupt_intent_file_is_loud_typed_error_and_audited(
@@ -151,7 +153,11 @@ def test_invalid_set_arguments_fail_loudly_and_audit_typed_error(
     tmp_path: Path,
 ) -> None:
     broker, sink, _store, _session = intent_broker(tmp_path)
-    bad = {"target_frequency": 1e9, "threshold_type": "bogus", "threshold_value": -1.0}
+    bad = {
+        "target_frequency_hz": 1e9,
+        "threshold_type": "bogus",
+        "threshold_value": -1.0,
+    }
     with pytest.raises(ValidationError):
         broker.dispatch("set_design_intent", bad)
     assert sink.records[-1].outcome == "typed_error"
