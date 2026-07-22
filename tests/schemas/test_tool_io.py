@@ -432,6 +432,56 @@ def test_session_union_routes_every_arm_and_rejects_an_unknown_outcome(
         adapter.validate_python({"outcome": "bogus", "template_text": "x"})
 
 
+@pytest.mark.parametrize("union_name", ["_SELECT", "_ATTACH", "_LIST_OPTIONS"])
+@pytest.mark.parametrize("lost_cause", ["crash", "disconnect", "unverifiable"])
+def test_lost_cause_does_not_change_session_status_union_routing(
+    union_name: str, lost_cause: str
+) -> None:
+    """gap 2 must not disturb gap 3's routing.
+
+    ``lost_cause`` is an optional, defaulted, NON-``outcome`` field, and
+    ``result_kind`` routes on the ABSENCE of an ``outcome`` key — so a
+    SessionStatus that carries a cause is still an untagged success payload.
+    _LIST_OPTIONS is included because a SessionStatus must NOT become routable on
+    a union that does not list it, whatever fields it grows.
+    """
+    lost = SessionStatus(
+        connection_health="disconnected",
+        suspect=False,
+        lost_cause=lost_cause,
+        selection=SelectionChain(),
+        template_text="[session] lost",
+    )
+    assert "outcome" not in lost.model_dump()
+    if union_name == "_LIST_OPTIONS":
+        with pytest.raises(ValidationError):
+            _LIST_OPTIONS.validate_python(lost.model_dump())
+        return
+    routed = globals()[union_name].validate_python(lost.model_dump())
+    assert isinstance(routed, SessionStatus)
+    assert routed.lost_cause == lost_cause
+
+
+def test_session_status_lost_cause_defaults_to_none_and_rejects_unknown() -> None:
+    # Omitted means "not a lost session" — never "unknown cause".
+    connected = SessionStatus(
+        connection_health="connected",
+        suspect=False,
+        selection=SelectionChain(process_id=1),
+        template_text="[session] connected",
+    )
+    assert connected.lost_cause is None
+    # A cause outside the three recovery actions cannot be smuggled in.
+    with pytest.raises(ValidationError):
+        SessionStatus(
+            connection_health="disconnected",
+            suspect=False,
+            lost_cause="timeout",  # type: ignore[arg-type]
+            selection=SelectionChain(),
+            template_text="x",
+        )
+
+
 @pytest.mark.parametrize("outcome", _SELECTION_REFUSAL_OUTCOMES)
 def test_selection_refused_arm_routes_every_remedy(outcome: str) -> None:
     refused = _SELECT.validate_python(_refusal_dict(outcome))

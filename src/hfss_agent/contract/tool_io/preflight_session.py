@@ -107,10 +107,27 @@ class SessionStatus(StrictModel):
     distinct boolean (not folded into ``connection_health``) because §3 lists it
     separately and it drives distinct behaviour — the next op forces
     reconnect-and-verify.
+
+    ``lost_cause`` is None unless the session is LOST; when LOST it names the
+    recovery action, so a consumer can branch on it instead of string-matching
+    the prose (ADR-18 decision 13(b); the ADR-16 decision 4 principle):
+
+      * ``crash`` — the process exited: relaunch AEDT and attach a NEW pid;
+      * ``disconnect`` — the link dropped, the process may still live: re-attach
+        the SAME pid;
+      * ``unverifiable`` — lost for a non-transport reason, where neither crash
+        nor disconnect can be honestly claimed: re-attach to continue.
+
+    ``connection_health`` stays the binary reachability signal (crash, disconnect
+    and unverifiable all flatten to ``disconnected`` there — ADR-17 decision 3);
+    this field is the WHY when disconnected, and nothing more. It deliberately
+    does NOT distinguish detached-from-lost: a never-attached session has no
+    cause to name, so it reports None like every other non-LOST state.
     """
 
     connection_health: Literal["connected", "disconnected"]
     suspect: bool
+    lost_cause: Literal["crash", "disconnect", "unverifiable"] | None = None
     selection: SelectionChain
     template_text: str
 
