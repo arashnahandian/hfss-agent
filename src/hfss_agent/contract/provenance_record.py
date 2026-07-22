@@ -69,3 +69,12 @@ class InspectionProvenance(StrictModel):
     read_at: AwareDatetime
     contract_version: str
     wrapper_version: str
+    # The AEDT version of the attached process, read at attach time. "Read
+    # under" is the honest framing: a process's AEDT version cannot change
+    # without a new process, and every re-attach re-reads it — so this states
+    # the version the read happened under, not the version the design was
+    # authored in (which is not readable on a read-only path). Plain str, not
+    # UntrustedStr: it is solver-reported via the attached Desktop, not sourced
+    # from the HFSS design, matching Environment.aedt_version's precedent. The
+    # value is supplied by the W-5 assembler, like contract_version.
+    read_under_aedt_version: str

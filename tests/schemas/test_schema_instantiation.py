@@ -148,14 +148,16 @@ def test_inspection_provenance_instantiates(
     inspection_provenance: InspectionProvenance,
 ) -> None:
     assert inspection_provenance.read_at.tzinfo is not None
-    # Exactly the five fields — no solve, metric, or judgment slot exists to be
-    # filled in later by something that never solved (ADR-20, gap 11).
+    # Exactly the six fields — no solve, metric, or judgment slot exists to be
+    # filled in later by something that never solved (ADR-20, gap 11). An AEDT
+    # version is none of those three, so the closed set still holds.
     assert set(InspectionProvenance.model_fields) == {
         "project",
         "design",
         "read_at",
         "contract_version",
         "wrapper_version",
+        "read_under_aedt_version",
     }
 
 
@@ -169,6 +171,7 @@ def test_inspection_provenance_rejects_naive_read_at() -> None:
             read_at=datetime(2026, 7, 17, 9, 30),
             contract_version="snapshot-1.0.0",
             wrapper_version="0.0.0",
+            read_under_aedt_version="2026.1",
         )
 
 
