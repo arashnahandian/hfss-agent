@@ -69,6 +69,40 @@ def test_roundtrip_record_to_jsonl_to_record_field_for_field(
     assert list(result.records) == [record]
 
 
+def test_unknown_capability_record_survives_the_jsonl_roundtrip(
+    tmp_path: Path,
+) -> None:
+    # The gap-9 record has a shape no pre-amendment line had (risk_tier null),
+    # so it gets its own round-trip: the both-or-neither validator runs on READ
+    # as well as write, and a null tier that failed to survive would come back
+    # as a "corrupt line" instead of a record.
+    writer = AuditLogWriter(_log(tmp_path))
+    record = _record("no_such_capability")
+    unknown = record.model_copy(
+        update={"risk_tier": None, "outcome": "unknown_capability"}
+    )
+    writer.append(unknown)
+
+    result = read_audit_records(_log(tmp_path))
+    assert result.corrupt_lines == ()
+    (loaded,) = result.records
+    assert loaded == unknown
+    assert loaded.risk_tier is None
+    assert loaded.outcome == "unknown_capability"
+
+
+def test_session_degraded_survives_the_jsonl_roundtrip(tmp_path: Path) -> None:
+    # All three states are distinguishable on disk — True/False/None must not
+    # collapse, since None ("nothing ran") and False ("ran, left it clean") are
+    # different claims.
+    writer = AuditLogWriter(_log(tmp_path))
+    for tool, value in (("a", True), ("b", False), ("c", None)):
+        writer.append(_record(tool).model_copy(update={"session_degraded": value}))
+
+    result = read_audit_records(_log(tmp_path))
+    assert [r.session_degraded for r in result.records] == [True, False, None]
+
+
 def test_log_bytes_have_no_carriage_returns(tmp_path: Path) -> None:
     writer = AuditLogWriter(_log(tmp_path))
     writer.append(_record("attach"))
@@ -289,6 +323,12 @@ def test_crash_then_continue_through_dispatch_never_bricks_the_log(
     first = broker.dispatch("get_audit_log")
     assert isinstance(first, AuditLog)
     assert [record.tool_name for record in first.records] == ["attach"]
+    # Gap 10: the incompleteness is now STRUCTURAL, so a consumer learns the
+    # log is not whole without string-matching a warning. The prose check is
+    # kept alongside deliberately — the two arms must stay distinct in what
+    # they SAY, and only prose carries that distinction to a human reader.
+    assert first.torn_tail is True
+    assert first.corrupt_lines == ()
     assert "mid-write" in first.template_text
 
     # That read's own audit record landed on its OWN line (fix 1), so it is
@@ -301,8 +341,13 @@ def test_crash_then_continue_through_dispatch_never_bricks_the_log(
         "attach",
         "get_audit_log",
     ]
-    assert "line(s) 2" in second.template_text
-    assert "INCOMPLETE" in second.template_text
+    # The stub moved from tail to interior, and BOTH flags move with it: the
+    # benign flag clears and the alarming one names the exact line. Asserting
+    # the line NUMBER structurally is the real tightening here — "line(s) 2"
+    # in prose would also match a sentence that got the number wrong elsewhere.
+    assert second.torn_tail is False
+    assert second.corrupt_lines == (2,)
+    assert "INCOMPLETE" in second.template_text  # the alarming wording, kept
 
     # And it keeps working — one crash never permanently bricks the log.
     third = broker.dispatch("get_audit_log")
@@ -312,3 +357,20 @@ def test_crash_then_continue_through_dispatch_never_bricks_the_log(
         "get_audit_log",
         "get_audit_log",
     ]
+    assert third.corrupt_lines == (2,)
+    assert third.torn_tail is False
+
+
+def test_a_whole_log_reports_both_flags_clean(tmp_path: Path) -> None:
+    # The negative anchor for gap 10: without it, a handler that hard-coded
+    # torn_tail=True / corrupt_lines=(2,) would pass every test above.
+    broker, _log_path, _session = audit_broker(tmp_path)
+    broker.dispatch("attach", {"process_id": DEFAULT_PID})
+    result = broker.dispatch("get_audit_log")
+
+    assert isinstance(result, AuditLog)
+    assert result.torn_tail is False
+    assert result.corrupt_lines == ()
+    # A whole log earns no notice at all — the prose stays clean too.
+    assert "INCOMPLETE" not in result.template_text
+    assert "mid-write" not in result.template_text

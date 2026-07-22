@@ -16,17 +16,20 @@ real append-only JSONL writer; tests inject an in-memory recorder).
 
 The locked dispatch order:
 
-  1. registry lookup — an unknown name is a typed ``UnknownCapability`` and is
-     NOT audited. That is a CONTRACT LIMITATION, not only a design decision:
-     ``AuditRecord.risk_tier`` is required, so the schema cannot express "a
-     capability that isn't registered was requested" — and fabricating a tier
-     would be worse ("safe" is a false claim about an unknown thing; "high"
-     would pollute the high-tier refusal trail). The log therefore carries an
-     unstated exception to "every tool call is audited", and an
+  1. registry lookup — an unknown name is a typed ``UnknownCapability`` and IS
+     audited (gap 9, amended): one record with ``risk_tier=None`` and
+     ``outcome="unknown_capability"``, under ``tool_name`` = the SANITIZED
+     attempted name. Previously this path appended nothing, because
+     ``AuditRecord.risk_tier`` was required and the schema could not express "a
+     capability that isn't registered was requested" — while fabricating a tier
+     would have been worse ("safe" is a false claim about an unknown thing;
+     "high" would pollute the high-tier refusal trail). The amendment makes the
+     absent tier representable instead, so the log no longer carries a silent
+     exception to "every dispatch attempt is audited". That matters because an
      unregistered-name dispatch is exactly what a bypass attempt or a wiring
-     bug looks like — logged as gap 9 on the pending contract amendment,
-     joining gaps 1-8. Unreachable over MCP (Step 2.8 exposes only registered
-     tools); the path exists for in-process callers.
+     bug looks like — the one thing you most want on the record. Unreachable
+     over MCP (Step 2.8 exposes only registered tools); the path exists for
+     in-process callers.
   2. HIGH tier: refused unconditionally, before the confirmer is consulted and
      before the handler is reachable. ADR-5 requires the tier's full guard set
      at the enforcement point, and the high tier's guards include a pre-change
@@ -48,12 +51,14 @@ The locked dispatch order:
      handed to the sink, and the result is returned. A sink failure fails
      closed: the result is withheld and a loud ``AuditFailure`` returned.
 
-Known audit-fidelity limit (approved plan §10 gap 8, on the pending contract
-amendment): a ``select`` whose adapter call faulted returns a
-``SessionStatus`` — a normal response shape — and therefore audits
-``outcome="ok"``. The record stores neither the response nor session health,
-so a clean select and one that degraded the session are indistinguishable in
-the log.
+Gap 8 (amended): a ``select`` whose adapter call faulted returns a
+``SessionStatus`` — a normal response shape — and therefore still audits
+``outcome="ok"``. What used to make that indistinguishable from a clean select
+was that the record carried no health signal at all; it now carries
+``session_degraded``, a DELTA over the health rank taken before and after the
+handler (see ``_health_rank``). A clean select records ``False``, a select that
+drove the session SUSPECT records ``True``, and the outcome field is left
+meaning exactly what it always meant.
 """
 
 from __future__ import annotations
@@ -83,6 +88,7 @@ from hfss_agent.contract.tool_io import (
     MetricsRefused,
     SelectionChain,
     SelectionRefused,
+    SessionStatus,
 )
 from hfss_agent.session import Session
 
@@ -128,12 +134,11 @@ class UnknownCapability(BrokerOutcome):
     """Dispatch of a name the registry does not hold — a programming error (or
     a bypass attempt) at the call site, not a user refusal.
 
-    NOT audited, and that is a contract limitation (gap 9, pending amendment),
-    not only a choice: ``AuditRecord.risk_tier`` is required, so the schema
-    cannot express "an unregistered capability was requested", and fabricating
-    a tier would be a false claim. See module docstring point 1. The echoed
-    name is caller-supplied, so it is sanitized before it lands in a rendered
-    message."""
+    AUDITED since the gap-9 amendment, as ``outcome="unknown_capability"`` with
+    ``risk_tier=None`` — the schema can now say "an unregistered capability was
+    requested" without inventing a tier for it. See module docstring point 1.
+    The echoed name is caller-supplied, so it is sanitized before it lands in a
+    rendered message OR in the log."""
 
     status: ClassVar[str] = "unknown_capability"
     name: str
@@ -184,6 +189,15 @@ def classify_outcome(result: object) -> AuditOutcome:
     """
     if isinstance(result, CannotEvaluate):
         return "cannot_evaluate"
+    # ORDER MATTERS (gap 9): UnknownCapability IS a BrokerOutcome, so this arm
+    # must precede the backstop below — which is precisely where it used to be
+    # caught, classifying an unregistered-name dispatch as typed_error. Moved
+    # ahead of it, not merged into it: "the name isn't registered" and "a
+    # broker-domain failure occurred" are different facts, and only the first
+    # one is allowed to carry risk_tier=None (AuditRecord's both-or-neither
+    # validator). Pinned by the totality test in test_dispatch.
+    if isinstance(result, UnknownCapability):
+        return "unknown_capability"
     # SelectionRefused sits with the other refusals, NOT with cannot_evaluate:
     # a session gate declined before PyAEDT was reached, which is precisely the
     # "refused by a wrapper gate or guard" reading. ``CannotEvaluate`` is checked
@@ -202,6 +216,27 @@ def classify_outcome(result: object) -> AuditOutcome:
     if isinstance(result, BrokerOutcome):
         return "typed_error"
     return "ok"
+
+
+def _health_rank(status: SessionStatus) -> int:
+    """Rank a session's health so "did this call worsen it" is a comparison
+    (gap 8): clean(0) < suspect(1) < lost(2).
+
+    Derived from the CONTRACT status, not the session's private ``_Health``, so
+    the broker stays on the public surface. ``lost_cause`` is the exact LOST
+    discriminator: ``build_status`` sets it only under LOST, while LOST and
+    DETACHED both flatten to ``connection_health="disconnected"`` — so ranking
+    on ``connection_health`` would score a never-attached session as badly as a
+    dead one and mark every call on it degraded.
+
+    DETACHED ranks 0 with ATTACHED deliberately: "no session" is not a degraded
+    session, and a dispatch against one has nothing to worsen.
+    """
+    if status.lost_cause is not None:
+        return 2
+    if status.suspect:
+        return 1
+    return 0
 
 
 class Broker:
@@ -255,10 +290,6 @@ class Broker:
         their own boundaries, and silently rewriting a caller's argument would
         make the executed call differ from the requested one.
         """
-        spec = self._registry.get(name)
-        if spec is None:
-            return UnknownCapability(name=sanitize_str(name))
-
         args = dict(arguments) if arguments is not None else {}
         started = datetime.now(timezone.utc)
         sanitized = sanitize_result(args)
@@ -269,7 +300,33 @@ class Broker:
         # internal state without triggering a verify cycle — so this line can
         # never fault or transition the session, even on a refusal path that
         # runs no handler. A DETACHED session honestly yields the empty chain.
-        selection = self._session.get_session_status().selection.model_dump()
+        # The WHOLE status is kept, not just the chain: its health is the
+        # before-half of the gap-8 ``session_degraded`` delta, free here.
+        before = self._session.get_session_status()
+        selection = before.selection.model_dump()
+
+        # The capture above deliberately precedes the registry lookup so an
+        # unregistered name is audited with the same fields every other record
+        # carries (gap 9) — the state the attempted call would have run under.
+        spec = self._registry.get(name)
+        if spec is None:
+            # duration=0.0 and session_degraded=None for the same reason as a
+            # tier refusal: no handler ran, so there was neither execution to
+            # time nor anything that could have worsened the session. The name
+            # is sanitized once and used for BOTH the returned value and the
+            # record — an unregistered name is caller-supplied, and the log is
+            # a rendering surface too.
+            attempted = sanitize_str(name)
+            return self._audit_and_return(
+                tool_name=attempted,
+                risk_tier=None,
+                started=started,
+                sanitized=sanitized,
+                selection=selection,
+                duration=0.0,
+                session_degraded=None,
+                result=UnknownCapability(name=attempted),
+            )
 
         if spec.tier == "high":
             # Unconditional — the confirmer is deliberately NOT consulted, so
@@ -279,7 +336,14 @@ class Broker:
                 capability=spec.name, tier=spec.tier, reason=_HIGH_TIER_REFUSAL
             )
             return self._audit_and_return(
-                spec, started, sanitized, selection, 0.0, refusal
+                tool_name=spec.name,
+                risk_tier=spec.tier,
+                started=started,
+                sanitized=sanitized,
+                selection=selection,
+                duration=0.0,
+                session_degraded=None,  # no handler ran — nothing to worsen it
+                result=refusal,
             )
 
         if spec.tier == "medium":
@@ -301,7 +365,14 @@ class Broker:
                     ),
                 )
                 return self._audit_and_return(
-                    spec, started, sanitized, selection, 0.0, refusal
+                    tool_name=spec.name,
+                    risk_tier=spec.tier,
+                    started=started,
+                    sanitized=sanitized,
+                    selection=selection,
+                    duration=0.0,
+                    session_degraded=None,  # no handler ran
+                    result=refusal,
                 )
         # safe proceeds directly; the confirmer is never consulted for it.
 
@@ -312,46 +383,98 @@ class Broker:
             # Audited as typed_error, then SURFACED — never swallowed. Should
             # the sink ALSO fail here, its exception propagates instead with
             # this one chained as __context__: nothing is swallowed either way.
+            # session_degraded IS applicable here: the handler ran, and a
+            # handler that raised is exactly one that may have left the session
+            # suspect — a raise is no reason to stop recording health.
             duration = time.perf_counter() - clock_start
             self._audit_sink.append(
                 self._build_record(
-                    spec, started, sanitized, selection, duration, "typed_error"
+                    tool_name=spec.name,
+                    risk_tier=spec.tier,
+                    started=started,
+                    sanitized=sanitized,
+                    selection=selection,
+                    duration=duration,
+                    session_degraded=self._degraded_since(before),
+                    outcome="typed_error",
                 )
             )
             raise
         duration = time.perf_counter() - clock_start
         return self._audit_and_return(
-            spec, started, sanitized, selection, duration, result
+            tool_name=spec.name,
+            risk_tier=spec.tier,
+            started=started,
+            sanitized=sanitized,
+            selection=selection,
+            duration=duration,
+            session_degraded=self._degraded_since(before),
+            result=result,
         )
 
     # --- audit assembly -------------------------------------------------------
 
+    def _degraded_since(self, before: SessionStatus) -> bool:
+        """The gap-8 ``session_degraded`` value: did THIS call worsen the
+        session? A rank DELTA, never a reading of the post-state alone.
+
+        Call this only AFTER the handler — the whole point is to compare
+        against the capture-before state, so passing the pre-state as the post
+        would answer "no" to everything. The post read is the same pure,
+        verify-exempt ``get_session_status`` the capture-before uses, so
+        observing health here cannot itself change it.
+
+        Two consequences worth stating, both intended. A call that runs against
+        an ALREADY-lost session and is refused scores 2 -> 2 = False: it did not
+        worsen anything, and that it met a dead session is already recorded as
+        its ``refused_by_gate`` outcome. A SUSPECT -> LOST transition scores
+        1 -> 2 = True, which a plain boolean of the post-state would have
+        missed — that miss is the reason this is a rank and not a bool.
+        """
+        return _health_rank(self._session.get_session_status()) > _health_rank(before)
+
     def _audit_and_return(
         self,
-        spec: CapabilitySpec,
+        *,
+        tool_name: str,
+        risk_tier: RiskTier | None,
         started: datetime,
         sanitized: dict[str, object],
         selection: dict[str, object],
         duration: float,
+        session_degraded: bool | None,
         result: object,
     ) -> object:
         """Classify ``result``, append its audit record, and return it — or,
         when the sink fails, withhold the result and return a loud
-        ``AuditFailure`` (plan §7: fail closed, misreport nothing)."""
+        ``AuditFailure`` (plan §7: fail closed, misreport nothing).
+
+        Takes ``tool_name``/``risk_tier`` rather than a ``CapabilitySpec``
+        because the unregistered-name path (gap 9) has no spec to pass — there
+        is no registered capability, which is the entire fact being audited.
+        """
         outcome = classify_outcome(result)
         record = self._build_record(
-            spec, started, sanitized, selection, duration, outcome
+            tool_name=tool_name,
+            risk_tier=risk_tier,
+            started=started,
+            sanitized=sanitized,
+            selection=selection,
+            duration=duration,
+            session_degraded=session_degraded,
+            outcome=outcome,
         )
         try:
             self._audit_sink.append(record)
         except Exception as exc:  # deliberately broad: ANY sink failure fails closed
-            action = (
-                "the dispatch was refused"
-                if outcome == "refused_by_gate"
-                else f"the capability ran to outcome '{outcome}'"
-            )
+            if outcome == "refused_by_gate":
+                action = "the dispatch was refused"
+            elif outcome == "unknown_capability":
+                action = "the capability name was not registered, so nothing ran"
+            else:
+                action = f"the capability ran to outcome '{outcome}'"
             return AuditFailure(
-                capability=spec.name,
+                capability=tool_name,
                 unaudited_outcome=outcome,
                 detail=f"{type(exc).__name__}: {exc}",
                 notice=(
@@ -365,24 +488,31 @@ class Broker:
 
     def _build_record(
         self,
-        spec: CapabilitySpec,
+        *,
+        tool_name: str,
+        risk_tier: RiskTier | None,
         started: datetime,
         sanitized: dict[str, object],
         selection: dict[str, object],
         duration: float,
+        session_degraded: bool | None,
         outcome: AuditOutcome,
     ) -> AuditRecord:
         # snapshot_id is None for every Part 2 capability: nothing on this
-        # surface emits a snapshot until Phase 2.
+        # surface emits a snapshot until Phase 2. risk_tier is None ONLY for an
+        # unregistered name, and AuditRecord's both-or-neither validator will
+        # reject the record loudly if that ever drifts out of step with
+        # outcome — so a tier can neither go unrecorded nor be invented here.
         return AuditRecord(
             timestamp=started,
-            tool_name=spec.name,
+            tool_name=tool_name,
             sanitized_arguments=sanitized,
             selection_state=selection,
-            risk_tier=spec.tier,
+            risk_tier=risk_tier,
             outcome=outcome,
             duration=duration,
             snapshot_id=None,
+            session_degraded=session_degraded,
         )
 
     # --- file surface (Part 3): the guarded export write primitive ------------
@@ -593,11 +723,13 @@ def audit_capabilities(log_path: str) -> tuple[CapabilitySpec, ...]:
         # returns, so the call is visible in subsequent reads but never in its
         # own result.
         #
-        # Contract gap 10 (pending amendment; checked, not assumed): AuditLog
-        # carries only ``records`` and ``template_text`` — no structured field
-        # for incompleteness — so both notices below can live ONLY in
-        # template_text. The two arms stay distinct in what they say:
-        # interior corruption is alarming, a torn tail is benign (reader.py).
+        # Gap 10 (amended): AuditLog now carries ``torn_tail`` and
+        # ``corrupt_lines``, so the reader's two incompleteness signals — which
+        # it always computed and this handler used to discard — reach the
+        # consumer STRUCTURALLY. The prose below is kept exactly as it was and
+        # complements them: a human reading history needs the distinction
+        # spelled out (interior corruption is alarming, a torn tail is benign —
+        # reader.py), and a machine should not have to string-match to find it.
         template = f"Audit log: {len(result.records)} record(s) returned."
         if result.corrupt_lines:
             numbers = ", ".join(str(number) for number in result.corrupt_lines)
@@ -613,7 +745,12 @@ def audit_capabilities(log_path: str) -> tuple[CapabilitySpec, ...]:
                 "mid-write when something stopped (e.g. a crash); that "
                 "partial entry is unreadable and not included."
             )
-        return AuditLog(records=list(result.records), template_text=template)
+        return AuditLog(
+            records=list(result.records),
+            template_text=template,
+            torn_tail=result.torn_tail,
+            corrupt_lines=result.corrupt_lines,
+        )
 
     return (
         CapabilitySpec(

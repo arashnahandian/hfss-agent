@@ -18,6 +18,7 @@ from broker_helpers import (
     make_broker,
     spec_for,
 )
+from pydantic import ValidationError
 
 from hfss_agent.broker import (
     AuditFailure,
@@ -25,6 +26,7 @@ from hfss_agent.broker import (
     UnknownCapability,
     classify_outcome,
 )
+from hfss_agent.broker.broker import BrokerOutcome
 from hfss_agent.contract.tool_io import (
     CannotEvaluate,
     ExportRefused,
@@ -44,6 +46,25 @@ def test_each_dispatch_appends_exactly_one_record() -> None:
     broker.dispatch("synthetic")
     assert isinstance(sink, RecordingSink)
     assert len(sink.records) == 2
+
+
+def test_exactly_one_record_holds_for_the_unregistered_path_too() -> None:
+    # Gap 9 closed the one path that appended ZERO records, so "exactly one
+    # record per dispatch ATTEMPT" is now universal rather than a rule with an
+    # unstated exception. Mixed here on purpose: registered and unregistered
+    # dispatches must contribute one record each, in call order.
+    spy = HandlerSpy()
+    broker, sink = make_broker((spec_for(spy),))
+    broker.dispatch("synthetic")
+    broker.dispatch("no_such_capability")
+    broker.dispatch("synthetic")
+
+    assert isinstance(sink, RecordingSink)
+    assert [record.tool_name for record in sink.records] == [
+        "synthetic",
+        "no_such_capability",
+        "synthetic",
+    ]
 
 
 def test_record_fields_are_sourced_per_the_plan_table() -> None:
@@ -66,6 +87,10 @@ def test_record_fields_are_sourced_per_the_plan_table() -> None:
     assert record.duration >= 0.0
     # No Part 2 capability emits a snapshot.
     assert record.snapshot_id is None
+    # The handler RAN, so session_degraded is applicable — and False: a spy
+    # handler touches no session, so nothing worsened. Note DETACHED ranks
+    # clean, not degraded: "no session" is not a damaged one.
+    assert record.session_degraded is False
     # DETACHED session: the honest empty-chain value on every field.
     assert all(value is None for value in record.selection_state.values())
 
@@ -83,23 +108,80 @@ def test_handler_receives_raw_args_while_audit_stores_sanitized() -> None:
     assert sink.records[0].sanitized_arguments == {"choice": _CLEAN}
 
 
-def test_unknown_capability_is_typed_and_not_audited() -> None:
+def test_unknown_capability_is_typed_and_audited_without_a_tier() -> None:
+    # INVERTED by the gap-9 amendment. This path used to append ZERO records
+    # because AuditRecord.risk_tier was required and an unregistered name has
+    # no honest tier to state. risk_tier is now optional for exactly this case,
+    # so the attempt is on the record — which matters because an
+    # unregistered-name dispatch is what a bypass attempt or a wiring bug looks
+    # like.
     broker, sink = make_broker(())
     result = broker.dispatch("no_such_capability", {"x": 1})
 
     assert isinstance(result, UnknownCapability)
     assert result.name == "no_such_capability"
-    # Not audited: AuditRecord.risk_tier is required and an unregistered name
-    # has no tier to audit under (module docstring point 1).
+    assert isinstance(sink, RecordingSink)
+    (record,) = sink.records
+    assert record.tool_name == "no_such_capability"
+    assert record.risk_tier is None  # never fabricated
+    assert record.outcome == "unknown_capability"
+    assert record.sanitized_arguments == {"x": 1}
+    # No handler ran, so neither timing nor a health delta is applicable.
+    assert record.duration == 0.0
+    assert record.session_degraded is None
+
+
+def test_unknown_capability_name_is_sanitized() -> None:
+    broker, sink = make_broker(())
+    result = broker.dispatch(_HOSTILE)
+    assert isinstance(result, UnknownCapability)
+    assert result.name == _CLEAN
+    # The log is a rendering surface too: the attempted name lands there
+    # sanitized, not raw, so a hostile name cannot inject through the audit
+    # trail either.
+    assert isinstance(sink, RecordingSink)
+    assert sink.records[0].tool_name == _CLEAN
+
+
+def test_registered_handler_returning_unknown_capability_fails_loud() -> None:
+    """INTENDED behaviour, pinned deliberately rather than softened.
+
+    A REGISTERED handler that returns ``UnknownCapability`` is a wiring bug:
+    the name resolved, so the record carries a real tier, while the classifier
+    reads the returned value as ``unknown_capability`` — the one pairing the
+    both-or-neither validator forbids. The record therefore cannot be built and
+    the dispatch raises at construction.
+
+    Failing loud here is the point. Degrading this to ``typed_error`` would let
+    a broken handler quietly produce a well-formed record whose tier and
+    outcome disagree about whether a capability was registered at all, which is
+    exactly the ambiguity the validator exists to prevent. End-to-end cover for
+    what the classifier pin and the schema validator pins each prove one half
+    of.
+    """
+    spy = HandlerSpy(result=UnknownCapability(name="nope"))
+    broker, sink = make_broker((spec_for(spy),))
+
+    with pytest.raises(ValidationError, match="requires risk_tier=None"):
+        broker.dispatch("synthetic")
+
+    # It raises BEFORE the sink is reached, so no misleading record is written.
     assert isinstance(sink, RecordingSink)
     assert sink.records == []
 
 
-def test_unknown_capability_name_is_sanitized() -> None:
-    broker, _sink = make_broker(())
-    result = broker.dispatch(_HOSTILE)
-    assert isinstance(result, UnknownCapability)
-    assert result.name == _CLEAN
+def test_unknown_capability_sink_failure_still_fails_closed() -> None:
+    # The new audit path inherits the fail-closed stance rather than quietly
+    # bypassing it: if the unregistered-name record cannot be written, the
+    # typed UnknownCapability is WITHHELD and a loud AuditFailure returned.
+    broker, _sink = make_broker((), sink=RaisingSink())
+    result = broker.dispatch("no_such_capability")
+
+    assert isinstance(result, AuditFailure)
+    assert result.capability == "no_such_capability"
+    assert result.unaudited_outcome == "unknown_capability"
+    assert "not registered" in result.notice
+    assert "withheld" in result.notice
 
 
 # --- outcome classifier: the full table, through dispatch and directly -------
@@ -162,12 +244,35 @@ def test_classifier_is_total_including_broker_domain_backstop() -> None:
     assert classify_outcome(_selection_refused()) == "refused_by_gate"
     refusal = DispatchRefused(capability="c", tier="medium", reason="denied")
     assert classify_outcome(refusal) == "refused_by_gate"
+    # Gap 9: UnknownCapability has its OWN outcome now — it is no longer swept
+    # into the backstop below as a generic typed_error.
+    assert classify_outcome(UnknownCapability(name="nope")) == "unknown_capability"
     # Broker-domain failures normally surface as exceptions (audited
-    # typed_error on the exception path); the value backstop stays total.
-    unknown = UnknownCapability(name="nope")
-    assert classify_outcome(unknown) == "typed_error"
+    # typed_error on the exception path); the value backstop stays total, and
+    # still catches a BrokerOutcome that is neither a refusal nor an unknown
+    # name.
+    assert classify_outcome(AuditFailure(
+        capability="c", unaudited_outcome="ok", detail="d", notice="n"
+    )) == "typed_error"
     assert classify_outcome(None) == "ok"
     assert classify_outcome(object()) == "ok"
+
+
+def test_unknown_capability_arm_precedes_the_broker_outcome_backstop() -> None:
+    """ORDERING PIN for the gap-9 arm — load-bearing, not documentation.
+
+    ``UnknownCapability`` IS a ``BrokerOutcome``, so the two arms are NESTED
+    (unlike the disjoint CannotEvaluate/SelectionRefused pair). Placed after
+    the backstop, the new arm would be dead code and an unregistered-name
+    dispatch would classify ``typed_error`` again — which the AuditRecord
+    both-or-neither validator would then reject outright, because the dispatch
+    path passes ``risk_tier=None`` for it. Swapping the arms therefore does not
+    merely mislabel: it makes the path raise.
+    """
+    unknown = UnknownCapability(name="nope")
+    assert isinstance(unknown, BrokerOutcome)  # the nesting the order guards
+    assert classify_outcome(unknown) == "unknown_capability"
+    assert classify_outcome(unknown) != "typed_error"
 
 
 @pytest.mark.parametrize(

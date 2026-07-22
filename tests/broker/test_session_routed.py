@@ -117,9 +117,14 @@ def test_no_session_refusal_flows_through_as_a_gate_refusal() -> None:
 
 def test_select_adapter_fault_audits_ok_with_degraded_status() -> None:
     # A scripted adapter timeout during select: the session goes SUSPECT and
-    # select returns a normal SessionStatus (suspect=True). The audit outcome
-    # is "ok" — the documented gap-8 fidelity limit (plan §10, pending
-    # contract amendment), pinned here so a future fix is a visible diff.
+    # select returns a normal SessionStatus (suspect=True), so the audit
+    # outcome is still "ok" — the response shape genuinely IS a normal one and
+    # the outcome field keeps its meaning.
+    #
+    # What the gap-8 amendment changed is that "ok" is no longer the WHOLE
+    # record: session_degraded now separates a clean select from one that
+    # damaged the session, which used to be indistinguishable in the log.
+    # Both halves are pinned here — the unchanged outcome and the new signal.
     scenario = Scenario(
         behavior={
             "select": OpBehavior(
@@ -137,6 +142,42 @@ def test_select_adapter_fault_audits_ok_with_degraded_status() -> None:
     assert result.suspect is True
     assert sink.records[-1].tool_name == "select"
     assert sink.records[-1].outcome == "ok"
+    # ATTACHED (rank 0) -> SUSPECT (rank 1): THIS call worsened the session.
+    assert sink.records[-1].session_degraded is True
+    # The attach that preceded it ran clean, so it must NOT be tarred by the
+    # later fault — the field is a per-call delta, not a sticky session flag.
+    assert sink.records[0].tool_name == "attach"
+    assert sink.records[0].session_degraded is False
+
+
+def test_a_call_on_an_already_degraded_session_is_not_reported_as_worsening() -> None:
+    """The gap-8 delta's defining case: session_degraded answers "did THIS call
+    worsen the session", not "is the session bad".
+
+    After the select above leaves the session SUSPECT, a get_session_status
+    (a pure read that neither re-verifies nor touches the adapter) finds it
+    SUSPECT and leaves it SUSPECT — rank 1 -> 1. Reporting True there would
+    blame this call for damage it did not do, and would make every subsequent
+    call look like a fresh degradation. A plain boolean read of the post-state
+    would do exactly that; the rank delta is why it does not.
+    """
+    scenario = Scenario(
+        behavior={
+            "select": OpBehavior(
+                fault=AdapterTimeout(operation="select", limit_seconds=1.0)
+            )
+        }
+    )
+    broker, sink, _session, _fake = session_broker(scenario)
+    broker.dispatch("attach", {"process_id": DEFAULT_PID})
+    broker.dispatch("select", {"stage": "project", "choice": "patch_antenna"})
+    assert sink.records[-1].session_degraded is True  # the call that DID it
+
+    status = broker.dispatch("get_session_status")
+    assert isinstance(status, SessionStatus)
+    assert status.suspect is True  # the session is still degraded...
+    assert sink.records[-1].tool_name == "get_session_status"
+    assert sink.records[-1].session_degraded is False  # ...but this call is innocent
 
 
 def test_list_options_adapter_fault_audits_cannot_evaluate() -> None:
