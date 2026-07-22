@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import platform
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from types import SimpleNamespace
 
 import pytest
@@ -184,7 +186,15 @@ def test_attach_reports_environment_identity() -> None:
     assert result.aedt_version == "2026.1"
     assert result.pyaedt_version == "1.2.0"
     assert result.python_version == platform.python_version()
-    assert result.wrapper_version == "0.0.0"
+    # Assert against the live source the adapter reads, not a pinned literal:
+    # wrapper_version is the installed PACKAGE version, so a hardcoded value
+    # here silently rots at every release bump. "0.0.0" is the adapter's
+    # not-installed sentinel, not an expected version — mirror both branches.
+    try:
+        expected_wrapper_version = _package_version("hfss-agent")
+    except PackageNotFoundError:
+        expected_wrapper_version = "0.0.0"
+    assert result.wrapper_version == expected_wrapper_version
 
 
 # --- list_options ------------------------------------------------------------
