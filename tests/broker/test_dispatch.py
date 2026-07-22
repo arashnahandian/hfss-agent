@@ -108,7 +108,10 @@ def _cannot_evaluate() -> CannotEvaluate:
 
 def _export_refused() -> ExportRefused:
     return ExportRefused(
-        path="C:/out.s2p", reason="path exists", template_text="Refused: path exists."
+        outcome="refused_existing_path",
+        path="C:/out.s2p",
+        reason="path exists",
+        template_text="Refused: path exists.",
     )
 
 

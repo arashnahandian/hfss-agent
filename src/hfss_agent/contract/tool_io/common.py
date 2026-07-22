@@ -78,24 +78,60 @@ class ExportWritten(StrictModel):
 
 
 class ExportRefused(StrictModel):
-    """export_* refusal arm: the path exists and ``overwrite`` was not set
-    (§6.5, ADR-8 — no silent overwrite).
+    """export_* refusal arm: the write was refused UP FRONT, before anything on
+    disk was touched (§6.5, ADR-8 — no silent overwrite).
 
     A distinct typed outcome, not an exception and not a silently-true success
-    flag: refusal is a normal, representable result the caller inspects.
+    flag: refusal is a normal, representable result the caller inspects. The
+    three values name the caller's REMEDY, so the caller can act on the tag
+    alone; the specific kind (which path rule, which network form) stays in the
+    prose ``reason``:
+
+      * ``refused_existing_path`` — the path exists and ``overwrite`` was not
+        set: retry with ``overwrite=true``;
+      * ``refused_invalid_path`` — the path string itself is unacceptable: fix
+        the path;
+      * ``refused_network_path`` — the path leaves this machine, which the
+        zero-egress policy forbids: choose a local path.
+
+    ``outcome`` has no default: a refusal must say which remedy applies, and a
+    defaulted discriminator would let a new refusal site silently inherit
+    "existing path" and mislead the caller into retrying with ``overwrite``.
     """
 
-    outcome: Literal["refused_existing_path"] = "refused_existing_path"
+    outcome: Literal[
+        "refused_existing_path", "refused_invalid_path", "refused_network_path"
+    ]
     path: str
     reason: str
     template_text: str
 
 
-# export_results / export_diagnostics_bundle share one result type covering all
-# three outcomes: written, refused-existing-path, and cannot_evaluate (the
-# adapter read that feeds the export failed). Discriminated on ``outcome`` so
-# exactly one arm is ever inhabited.
+class ExportFailed(StrictModel):
+    """export_* failure arm: a write that BROKE MID-OPERATION — distinct from
+    ``ExportRefused``, which declines before touching the disk. Disk full, a
+    permission loss between open and write, a device error: the operation was
+    attempted and did not complete.
+
+    ``orphaned_temp`` carries the temp file a temp-then-replace write left
+    behind when it failed after the temp already existed (``None`` when no temp
+    was created, or when the failure happened before it was). No deletion path
+    exists in this codebase, so naming it here is what keeps a file left behind
+    on the user's disk from being silent.
+    """
+
+    outcome: Literal["write_failed"]
+    path: str
+    reason: str
+    orphaned_temp: str | None = None
+    template_text: str
+
+
+# export_results / export_diagnostics_bundle share one result type covering
+# every outcome: written, refused up front (three remedies), failed mid-write,
+# and cannot_evaluate (the adapter read that feeds the export failed).
+# Discriminated on ``outcome`` so exactly one arm is ever inhabited.
 ExportResult = Annotated[
-    ExportWritten | ExportRefused | CannotEvaluate,
+    ExportWritten | ExportRefused | ExportFailed | CannotEvaluate,
     Field(discriminator="outcome"),
 ]

@@ -4,8 +4,9 @@ Proves the load-bearing structural guarantees:
   * ComputeMetricsResult — "metrics *and* failing gates" and "neither populated"
     are both unconstructible (the "no numbers on gate failure" promise, by the
     type rather than by convention);
-  * ExportResult — its three arms (written / refused / cannot_evaluate) are
-    mutually exclusive and routed by ``outcome``;
+  * ExportResult — its arms (written / refused / failed / cannot_evaluate) are
+    mutually exclusive and routed by ``outcome``, including each of the three
+    refusal remedies;
   * every new tool_io schema constructs from representative valid data;
   * the adapter-backed result unions route a CannotEvaluate payload to
     CannotEvaluate and a success payload to the success type;
@@ -52,6 +53,7 @@ from hfss_agent.contract.tool_io import (
     ComputeMetricsResult,
     DesignIntentState,
     ExportDiagnosticsBundleRequest,
+    ExportFailed,
     ExportRefused,
     ExportResult,
     ExportResultsRequest,
@@ -204,7 +206,7 @@ def test_compute_metrics_union_rejects_unknown_outcome() -> None:
         _COMPUTE_METRICS.validate_python({"outcome": "bogus", "template_text": "x"})
 
 
-# --- ExportResult: three mutually exclusive arms -----------------------------
+# --- ExportResult: four mutually exclusive arms ------------------------------
 
 
 def test_export_written_arm_routes() -> None:
@@ -219,20 +221,67 @@ def test_export_written_arm_routes() -> None:
     assert isinstance(written, ExportWritten)
 
 
-def test_export_refused_arm_routes() -> None:
+@pytest.mark.parametrize(
+    "outcome",
+    ["refused_existing_path", "refused_invalid_path", "refused_network_path"],
+)
+def test_export_refused_arm_routes_every_remedy(outcome: str) -> None:
+    # All three refusal remedies are the SAME arm, kept apart only by the tag —
+    # so a caller can branch on the tag without parsing the prose reason.
     refused = _EXPORT.validate_python(
         {
-            "outcome": "refused_existing_path",
+            "outcome": outcome,
             "path": "out.s2p",
-            "reason": "Path exists; pass overwrite=true to replace.",
+            "reason": "refusal detail lives here, not in the tag",
             "template_text": "[export] refused out.s2p",
         }
     )
     assert isinstance(refused, ExportRefused)
+    assert refused.outcome == outcome
+
+
+def test_export_refused_requires_an_outcome() -> None:
+    # No default: a refusal must state WHICH remedy applies (gap 5), rather
+    # than silently inheriting "existing path" and inviting a bad retry.
+    with pytest.raises(ValidationError):
+        ExportRefused(path="out.s2p", reason="r", template_text="x")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("orphaned_temp", ["out.s2p.tmp-a1b2", None])
+def test_export_failed_arm_routes_with_and_without_orphaned_temp(
+    orphaned_temp: str | None,
+) -> None:
+    # A write that broke MID-operation, with and without a temp left behind.
+    failed = _EXPORT.validate_python(
+        {
+            "outcome": "write_failed",
+            "path": "out.s2p",
+            "reason": "no space left on device",
+            "orphaned_temp": orphaned_temp,
+            "template_text": "[export] write failed for out.s2p",
+        }
+    )
+    assert isinstance(failed, ExportFailed)
+    assert failed.orphaned_temp == orphaned_temp
+
+
+def test_export_failed_orphaned_temp_defaults_to_none() -> None:
+    # Omitting it means "nothing was left behind" — never "unknown".
+    failed = _EXPORT.validate_python(
+        {
+            "outcome": "write_failed",
+            "path": "out.s2p",
+            "reason": "permission denied mid-write",
+            "template_text": "[export] write failed for out.s2p",
+        }
+    )
+    assert isinstance(failed, ExportFailed)
+    assert failed.orphaned_temp is None
 
 
 def test_export_cannot_evaluate_arm_routes() -> None:
-    # export_* covers the failed-adapter-read case as a third arm (not two).
+    # export_* covers the failed-adapter-read case as its own arm — a PyAEDT
+    # limitation, never conflated with a refusal or a broken write.
     cannot = _EXPORT.validate_python(_CANNOT_EVALUATE_DICT)
     assert isinstance(cannot, CannotEvaluate)
 

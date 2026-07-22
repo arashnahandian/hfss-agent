@@ -402,6 +402,7 @@ class Broker:
                 written = exclusive_create_write(path, payload)
             except FileExistsError:
                 return ExportRefused(
+                    outcome="refused_existing_path",
                     path=path,
                     reason=(
                         "the path already exists and overwrite was not set; "

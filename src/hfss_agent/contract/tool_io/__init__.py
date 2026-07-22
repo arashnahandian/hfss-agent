@@ -16,6 +16,7 @@ Response-shape conventions:
 from hfss_agent.contract.tool_io.common import (
     CannotEvaluate,
     EngineStatus,
+    ExportFailed,
     ExportFormat,
     ExportRefused,
     ExportResult,
@@ -73,6 +74,7 @@ __all__ = [
     # Cross-cutting shared shapes and §3 enumerations
     "CannotEvaluate",
     "EngineStatus",
+    "ExportFailed",
     "ExportFormat",
     "ExportRefused",
     "ExportResult",
