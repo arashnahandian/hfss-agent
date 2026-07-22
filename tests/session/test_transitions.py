@@ -19,7 +19,7 @@ from hfss_agent.adapter.results import (
     AdapterTimeout,
 )
 from hfss_agent.contract.tool_io import CannotEvaluate, SessionStatus
-from hfss_agent.session.status import _Health, _LostCause
+from hfss_agent.session.status import _Health, _LostCause, build_status
 
 # --- operation outcomes (triggered on select) --------------------------------
 
@@ -55,23 +55,31 @@ def test_cannot_evaluate_stays_attached_and_leaves_chain_untouched() -> None:
 
 
 @pytest.mark.parametrize(
-    "fault, health, cause",
+    "fault, health, cause, reported_cause",
     [
         (
             AdapterTimeout(operation="select", limit_seconds=1.0),
             _Health.SUSPECT,
             None,
+            None,
         ),
-        (AdapterInternalError(detail="boom"), _Health.SUSPECT, None),
-        (AdapterDisconnect(detail="dropped"), _Health.LOST, _LostCause.DISCONNECT),
-        (AdapterCrash(detail="died"), _Health.LOST, _LostCause.CRASH),
+        (AdapterInternalError(detail="boom"), _Health.SUSPECT, None, None),
+        (
+            AdapterDisconnect(detail="dropped"),
+            _Health.LOST,
+            _LostCause.DISCONNECT,
+            "disconnect",
+        ),
+        (AdapterCrash(detail="died"), _Health.LOST, _LostCause.CRASH, "crash"),
     ],
 )
-def test_fault_maps_to_its_transition(fault, health, cause) -> None:
+def test_fault_maps_to_its_transition(fault, health, cause, reported_cause) -> None:
     session, _ = attached(Scenario(behavior={"select": OpBehavior(fault=fault)}))
     session.select("project", "patch_antenna")
     assert session._state.health is health
     assert session._state.lost_cause is cause
+    # The internal distinction now also reaches the caller as a typed field.
+    assert build_status(session._state).lost_cause == reported_cause
 
 
 def test_disconnect_and_crash_do_not_collapse() -> None:
@@ -86,6 +94,13 @@ def test_disconnect_and_crash_do_not_collapse() -> None:
     assert disc._state.lost_cause is _LostCause.DISCONNECT
     assert crash._state.lost_cause is _LostCause.CRASH
     assert disc._state.lost_cause is not crash._state.lost_cause
+    # ...and the contract no longer flattens them: connection_health still
+    # collapses both to "disconnected" (it is the binary reachability signal),
+    # while lost_cause carries the differing recovery action (gap 2).
+    disc_status, crash_status = build_status(disc._state), build_status(crash._state)
+    assert disc_status.connection_health == crash_status.connection_health
+    assert disc_status.connection_health == "disconnected"
+    assert (disc_status.lost_cause, crash_status.lost_cause) == ("disconnect", "crash")
 
 
 # --- attach ------------------------------------------------------------------
@@ -115,3 +130,8 @@ def test_attach_fault_goes_detached(fault) -> None:
     assert session._state.health is _Health.DETACHED
     assert isinstance(result, SessionStatus)
     assert result.connection_health == "disconnected" and result.suspect is False
+    # All four faults collapse here, in BOTH fields, and that is correct: a failed
+    # attach is DETACHED, not LOST — there was never a session to lose, so even
+    # the crash fault has no lost-session cause to name. lost_cause explains a
+    # LOST session only; DETACHED must not borrow "unverifiable" (gap 2).
+    assert result.lost_cause is None

@@ -52,6 +52,10 @@ def test_medium_refused_by_default_never_reaches_the_handler() -> None:
     assert record.risk_tier == "medium"
     assert record.outcome == "refused_by_gate"
     assert record.duration == 0.0  # the handler never ran
+    # ...and for the same reason session_degraded is None, not False: nothing
+    # ran that COULD have worsened the session, which is different from having
+    # run and left it clean (gap 8).
+    assert record.session_degraded is None
 
 
 def test_medium_approved_runs_and_audits_ok() -> None:
@@ -114,6 +118,7 @@ def test_high_is_refused_unconditionally_and_confirmer_never_consulted(
     (record,) = sink.records
     assert record.risk_tier == "high"
     assert record.outcome == "refused_by_gate"
+    assert record.session_degraded is None  # no handler ran (gap 8)
 
 
 def test_high_refusal_names_the_adrs_and_the_missing_snapshot_provider() -> None:

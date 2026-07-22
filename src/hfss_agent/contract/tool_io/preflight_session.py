@@ -9,11 +9,18 @@ not a cannot_evaluate. attach / select / get_session_status share one
 SessionStatus schema.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Discriminator, Tag
 
 from hfss_agent.contract.common import StrictModel, UntrustedStr, Variation
 from hfss_agent.contract.design_snapshot import Environment, Project
-from hfss_agent.contract.tool_io.common import CannotEvaluate, SelectionStage
+from hfss_agent.contract.tool_io.common import (
+    CannotEvaluate,
+    SelectionRefused,
+    SelectionStage,
+    result_kind,
+)
 
 # --- preflight_environment ---------------------------------------------------
 
@@ -51,12 +58,15 @@ class PreflightReport(StrictModel):
 
 
 class AedtProcess(StrictModel):
-    """One running AEDT process discovered by W-2 (§3)."""
+    """One running AEDT process a user can attach to via ``attach(process_id)``.
+
+    Process discovery is deferred to a future step — it is not W-2 in the MVP
+    (ADR-18 decision 1), so this schema has no producer today. It carries only
+    what a read-only listing can honestly supply.
+    """
 
     process_id: int
-    aedt_version: str
     grpc_port: int | None = None
-    open_projects: list[UntrustedStr]  # HFSS-sourced names → untrusted
 
 
 class AedtProcessList(StrictModel):
@@ -97,10 +107,27 @@ class SessionStatus(StrictModel):
     distinct boolean (not folded into ``connection_health``) because §3 lists it
     separately and it drives distinct behaviour — the next op forces
     reconnect-and-verify.
+
+    ``lost_cause`` is None unless the session is LOST; when LOST it names the
+    recovery action, so a consumer can branch on it instead of string-matching
+    the prose (ADR-18 decision 13(b); the ADR-16 decision 4 principle):
+
+      * ``crash`` — the process exited: relaunch AEDT and attach a NEW pid;
+      * ``disconnect`` — the link dropped, the process may still live: re-attach
+        the SAME pid;
+      * ``unverifiable`` — lost for a non-transport reason, where neither crash
+        nor disconnect can be honestly claimed: re-attach to continue.
+
+    ``connection_health`` stays the binary reachability signal (crash, disconnect
+    and unverifiable all flatten to ``disconnected`` there — ADR-17 decision 3);
+    this field is the WHY when disconnected, and nothing more. It deliberately
+    does NOT distinguish detached-from-lost: a never-attached session has no
+    cause to name, so it reports None like every other non-LOST state.
     """
 
     connection_health: Literal["connected", "disconnected"]
     suspect: bool
+    lost_cause: Literal["crash", "disconnect", "unverifiable"] | None = None
     selection: SelectionChain
     template_text: str
 
@@ -149,6 +176,37 @@ class SelectRequest(StrictModel):
 # --- response unions ---------------------------------------------------------
 # preflight_environment -> PreflightReport and list_aedt_processes ->
 # AedtProcessList have NO CannotEvaluate arm (see module docstring).
+
+# attach has NO SelectionRefused arm, and that is a verified property of the
+# implementation, not an oversight: ``Session.attach`` runs no session gate — it
+# IS the operation that establishes a session, so "no usable session" cannot
+# apply, and it takes no selection stage, so neither ordering nor selection
+# completeness can apply. Its only non-success outcomes are a faulted attach
+# (reported as a DETACHED SessionStatus) and a faithfully-mapped adapter
+# cannot_evaluate. Giving it a refusal arm would advertise a state no producer
+# can emit.
 AttachResult = SessionStatus | CannotEvaluate
-ListSelectionOptionsResult = SelectionOptions | CannotEvaluate
-SelectResult = SessionStatus | CannotEvaluate
+
+# select / list_selection_options route through the CALLABLE ``result_kind``
+# discriminator rather than a declared ``Field(discriminator="outcome")`` (see
+# result_kind's docstring): SessionStatus and SelectionOptions are shared across
+# other unions, so they must NOT grow an ``outcome`` field. Success payloads stay
+# untagged; every refusal and the cannot_evaluate arm are routed by their tag.
+# SelectionRefused appears once per remedy tag — the arms are the same type, kept
+# apart so an unknown outcome cannot slip in under a broad tag.
+ListSelectionOptionsResult = Annotated[
+    Annotated[SelectionOptions, Tag("success")]
+    | Annotated[CannotEvaluate, Tag("cannot_evaluate")]
+    | Annotated[SelectionRefused, Tag("refused_no_session")]
+    | Annotated[SelectionRefused, Tag("refused_selection_order")]
+    | Annotated[SelectionRefused, Tag("refused_incomplete_selection")],
+    Discriminator(result_kind),
+]
+SelectResult = Annotated[
+    Annotated[SessionStatus, Tag("success")]
+    | Annotated[CannotEvaluate, Tag("cannot_evaluate")]
+    | Annotated[SelectionRefused, Tag("refused_no_session")]
+    | Annotated[SelectionRefused, Tag("refused_selection_order")]
+    | Annotated[SelectionRefused, Tag("refused_incomplete_selection")],
+    Discriminator(result_kind),
+]

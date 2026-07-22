@@ -4,11 +4,16 @@ Proves the load-bearing structural guarantees:
   * ComputeMetricsResult — "metrics *and* failing gates" and "neither populated"
     are both unconstructible (the "no numbers on gate failure" promise, by the
     type rather than by convention);
-  * ExportResult — its three arms (written / refused / cannot_evaluate) are
-    mutually exclusive and routed by ``outcome``;
+  * ExportResult — its arms (written / refused / failed / cannot_evaluate) are
+    mutually exclusive and routed by ``outcome``, including each of the three
+    refusal remedies;
   * every new tool_io schema constructs from representative valid data;
   * the adapter-backed result unions route a CannotEvaluate payload to
     CannotEvaluate and a success payload to the success type;
+  * the three session result unions route through the CALLABLE ``result_kind``
+    discriminator — every arm, plus an unknown outcome rejected — while their
+    shared success types stay untagged (no ``outcome`` field, unchanged wire
+    format), which is the reason the discriminator is callable at all;
   * importing ``contract.tool_io`` pulls in no ``pyaedt`` (purity holds — ADR-3).
 
 Reuses the shared conftest fixtures (``variation``, ``provenance``,
@@ -28,6 +33,7 @@ from hfss_agent.contract import (
     Environment,
     Finding,
     FreshnessEvidence,
+    InspectionProvenance,
     InspectionSection,
     IntentObject,
     MetricRecord,
@@ -51,6 +57,7 @@ from hfss_agent.contract.tool_io import (
     ComputeMetricsResult,
     DesignIntentState,
     ExportDiagnosticsBundleRequest,
+    ExportFailed,
     ExportRefused,
     ExportResult,
     ExportResultsRequest,
@@ -60,13 +67,16 @@ from hfss_agent.contract.tool_io import (
     InspectDesignResult,
     InspectionResult,
     ListSelectionOptionsRequest,
+    ListSelectionOptionsResult,
     MetricsComputed,
     MetricsRefused,
     PreflightReport,
     SelectionChain,
     SelectionOption,
     SelectionOptions,
+    SelectionRefused,
     SelectRequest,
+    SelectResult,
     SessionStatus,
     SolutionValidityReport,
     SolveHealthReport,
@@ -80,6 +90,8 @@ _COMPUTE_METRICS = TypeAdapter(ComputeMetricsResult)
 _EXPORT = TypeAdapter(ExportResult)
 _ATTACH = TypeAdapter(AttachResult)
 _INSPECT = TypeAdapter(InspectDesignResult)
+_SELECT = TypeAdapter(SelectResult)
+_LIST_OPTIONS = TypeAdapter(ListSelectionOptionsResult)
 
 
 # --- shared instances --------------------------------------------------------
@@ -203,7 +215,7 @@ def test_compute_metrics_union_rejects_unknown_outcome() -> None:
         _COMPUTE_METRICS.validate_python({"outcome": "bogus", "template_text": "x"})
 
 
-# --- ExportResult: three mutually exclusive arms -----------------------------
+# --- ExportResult: four mutually exclusive arms ------------------------------
 
 
 def test_export_written_arm_routes() -> None:
@@ -218,20 +230,67 @@ def test_export_written_arm_routes() -> None:
     assert isinstance(written, ExportWritten)
 
 
-def test_export_refused_arm_routes() -> None:
+@pytest.mark.parametrize(
+    "outcome",
+    ["refused_existing_path", "refused_invalid_path", "refused_network_path"],
+)
+def test_export_refused_arm_routes_every_remedy(outcome: str) -> None:
+    # All three refusal remedies are the SAME arm, kept apart only by the tag —
+    # so a caller can branch on the tag without parsing the prose reason.
     refused = _EXPORT.validate_python(
         {
-            "outcome": "refused_existing_path",
+            "outcome": outcome,
             "path": "out.s2p",
-            "reason": "Path exists; pass overwrite=true to replace.",
+            "reason": "refusal detail lives here, not in the tag",
             "template_text": "[export] refused out.s2p",
         }
     )
     assert isinstance(refused, ExportRefused)
+    assert refused.outcome == outcome
+
+
+def test_export_refused_requires_an_outcome() -> None:
+    # No default: a refusal must state WHICH remedy applies (gap 5), rather
+    # than silently inheriting "existing path" and inviting a bad retry.
+    with pytest.raises(ValidationError):
+        ExportRefused(path="out.s2p", reason="r", template_text="x")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("orphaned_temp", ["out.s2p.tmp-a1b2", None])
+def test_export_failed_arm_routes_with_and_without_orphaned_temp(
+    orphaned_temp: str | None,
+) -> None:
+    # A write that broke MID-operation, with and without a temp left behind.
+    failed = _EXPORT.validate_python(
+        {
+            "outcome": "write_failed",
+            "path": "out.s2p",
+            "reason": "no space left on device",
+            "orphaned_temp": orphaned_temp,
+            "template_text": "[export] write failed for out.s2p",
+        }
+    )
+    assert isinstance(failed, ExportFailed)
+    assert failed.orphaned_temp == orphaned_temp
+
+
+def test_export_failed_orphaned_temp_defaults_to_none() -> None:
+    # Omitting it means "nothing was left behind" — never "unknown".
+    failed = _EXPORT.validate_python(
+        {
+            "outcome": "write_failed",
+            "path": "out.s2p",
+            "reason": "permission denied mid-write",
+            "template_text": "[export] write failed for out.s2p",
+        }
+    )
+    assert isinstance(failed, ExportFailed)
+    assert failed.orphaned_temp is None
 
 
 def test_export_cannot_evaluate_arm_routes() -> None:
-    # export_* covers the failed-adapter-read case as a third arm (not two).
+    # export_* covers the failed-adapter-read case as its own arm — a PyAEDT
+    # limitation, never conflated with a refusal or a broken write.
     cannot = _EXPORT.validate_python(_CANNOT_EVALUATE_DICT)
     assert isinstance(cannot, CannotEvaluate)
 
@@ -264,40 +323,231 @@ def test_export_rejects_unknown_outcome() -> None:
         )
 
 
-# --- adapter-backed result unions route cannot_evaluate vs success -----------
+# --- session result unions: the callable-discriminator routes ----------------
+# SelectResult / ListSelectionOptionsResult / InspectDesignResult route via the
+# CALLABLE ``result_kind`` discriminator, not a declared
+# Field(discriminator="outcome"), precisely so their success types keep their
+# untagged wire format. These tests pin both halves of that bargain: the success
+# types stay untagged, and every tagged arm still routes exactly.
+
+_SELECTION_REFUSAL_OUTCOMES = [
+    "refused_no_session",
+    "refused_selection_order",
+    "refused_incomplete_selection",
+]
 
 
-def test_attach_result_routes_success_and_cannot_evaluate(
-    variation: Variation,
-) -> None:
-    ok = SessionStatus(
+def _refusal_dict(outcome: str) -> dict[str, str]:
+    return {
+        "outcome": outcome,
+        "reason": "no usable session",
+        "limitation": "attach to a running process first. PyAEDT was not reached.",
+        "template_text": "Cannot proceed: attach to a running process first.",
+    }
+
+
+@pytest.fixture
+def session_status(variation: Variation) -> SessionStatus:
+    return SessionStatus(
         connection_health="connected",
         suspect=False,
         selection=SelectionChain(process_id=4321, variation=variation),
         template_text="[session] connected",
     )
-    assert isinstance(_ATTACH.validate_python(ok.model_dump()), SessionStatus)
+
+
+@pytest.fixture
+def selection_options() -> SelectionOptions:
+    return SelectionOptions(
+        stage="design",
+        options=[SelectionOption(value="HFSSDesign1", display="HFSSDesign1")],
+        template_text="[options] design",
+    )
+
+
+@pytest.fixture
+def inspection_result(
+    inspection_provenance: InspectionProvenance,
+) -> InspectionResult:
+    return InspectionResult(
+        sections={"variables": InspectionSection(data={"w": "2mm"}, read_status="ok")},
+        provenance=inspection_provenance,
+        template_text="[inspect] variables",
+    )
+
+
+def test_session_success_types_carry_no_outcome_field(
+    session_status: SessionStatus,
+    selection_options: SelectionOptions,
+    inspection_result: InspectionResult,
+) -> None:
+    """The reason the discriminator is callable at all (gap 3).
+
+    These three success types are shared across roughly six unions and are the
+    on-the-wire shape of attach/select/get_session_status. A declared
+    ``Field(discriminator="outcome")`` would have forced an ``outcome`` field
+    onto every one of them, changing that wire format for every consumer just to
+    tag a refusal. If this test ever fails, the success payloads have been
+    tagged and the wire format has silently changed.
+    """
+    for model in (session_status, selection_options, inspection_result):
+        assert "outcome" not in type(model).model_fields
+        assert "outcome" not in model.model_dump()
+
+
+@pytest.mark.parametrize(
+    ("union_name", "success_fixture", "success_type"),
+    [
+        ("_SELECT", "session_status", SessionStatus),
+        ("_LIST_OPTIONS", "selection_options", SelectionOptions),
+        ("_INSPECT", "inspection_result", InspectionResult),
+    ],
+)
+def test_session_union_routes_every_arm_and_rejects_an_unknown_outcome(
+    union_name: str,
+    success_fixture: str,
+    success_type: type,
+    request: pytest.FixtureRequest,
+) -> None:
+    """ALL routes for one union, in one place: untagged success, cannot_evaluate,
+    each of the three refusal remedies, and the unknown-outcome rejection."""
+    adapter: TypeAdapter[Any] = globals()[union_name]
+    success = request.getfixturevalue(success_fixture)
+
+    # Untagged payload -> the success arm (absence of "outcome" IS the signal).
+    assert isinstance(adapter.validate_python(success.model_dump()), success_type)
+    # An adapter-reported PyAEDT failure keeps its own arm.
+    assert isinstance(
+        adapter.validate_python(_CANNOT_EVALUATE_DICT), CannotEvaluate
+    )
+    # Each refusal remedy routes to SelectionRefused and KEEPS its tag, so a
+    # caller can branch on the tag alone without parsing the prose.
+    for outcome in _SELECTION_REFUSAL_OUTCOMES:
+        refused = adapter.validate_python(_refusal_dict(outcome))
+        assert isinstance(refused, SelectionRefused)
+        assert refused.outcome == outcome
+    # An outcome the discriminator does not know must RAISE, never quietly land
+    # on whichever arm happens to validate.
+    with pytest.raises(ValidationError):
+        adapter.validate_python({"outcome": "bogus", "template_text": "x"})
+
+
+@pytest.mark.parametrize("union_name", ["_SELECT", "_ATTACH", "_LIST_OPTIONS"])
+@pytest.mark.parametrize("lost_cause", ["crash", "disconnect", "unverifiable"])
+def test_lost_cause_does_not_change_session_status_union_routing(
+    union_name: str, lost_cause: str
+) -> None:
+    """gap 2 must not disturb gap 3's routing.
+
+    ``lost_cause`` is an optional, defaulted, NON-``outcome`` field, and
+    ``result_kind`` routes on the ABSENCE of an ``outcome`` key — so a
+    SessionStatus that carries a cause is still an untagged success payload.
+    _LIST_OPTIONS is included because a SessionStatus must NOT become routable on
+    a union that does not list it, whatever fields it grows.
+    """
+    lost = SessionStatus(
+        connection_health="disconnected",
+        suspect=False,
+        lost_cause=lost_cause,
+        selection=SelectionChain(),
+        template_text="[session] lost",
+    )
+    assert "outcome" not in lost.model_dump()
+    if union_name == "_LIST_OPTIONS":
+        with pytest.raises(ValidationError):
+            _LIST_OPTIONS.validate_python(lost.model_dump())
+        return
+    routed = globals()[union_name].validate_python(lost.model_dump())
+    assert isinstance(routed, SessionStatus)
+    assert routed.lost_cause == lost_cause
+
+
+def test_session_status_lost_cause_defaults_to_none_and_rejects_unknown() -> None:
+    # Omitted means "not a lost session" — never "unknown cause".
+    connected = SessionStatus(
+        connection_health="connected",
+        suspect=False,
+        selection=SelectionChain(process_id=1),
+        template_text="[session] connected",
+    )
+    assert connected.lost_cause is None
+    # A cause outside the three recovery actions cannot be smuggled in.
+    with pytest.raises(ValidationError):
+        SessionStatus(
+            connection_health="disconnected",
+            suspect=False,
+            lost_cause="timeout",  # type: ignore[arg-type]
+            selection=SelectionChain(),
+            template_text="x",
+        )
+
+
+@pytest.mark.parametrize("outcome", _SELECTION_REFUSAL_OUTCOMES)
+def test_selection_refused_arm_routes_every_remedy(outcome: str) -> None:
+    refused = _SELECT.validate_python(_refusal_dict(outcome))
+    assert isinstance(refused, SelectionRefused)
+    assert refused.outcome == outcome
+
+
+def test_selection_refused_requires_an_outcome() -> None:
+    # No default, for ExportRefused's reason: a refusal must state WHICH remedy
+    # applies rather than silently inheriting one that cannot fix the problem.
+    with pytest.raises(ValidationError):
+        SelectionRefused(reason="r", limitation="l", template_text="x")  # type: ignore[call-arg]
+
+
+def test_selection_refused_is_not_a_cannot_evaluate() -> None:
+    # The whole point of gap 3: a session gate that never reached PyAEDT is a
+    # distinct type from "PyAEDT could not evaluate this".
+    refused = _SELECT.validate_python(_refusal_dict("refused_no_session"))
+    assert not isinstance(refused, CannotEvaluate)
+
+
+def test_attach_result_routes_success_and_cannot_evaluate(
+    session_status: SessionStatus,
+) -> None:
+    assert isinstance(
+        _ATTACH.validate_python(session_status.model_dump()), SessionStatus
+    )
     assert isinstance(_ATTACH.validate_python(_CANNOT_EVALUATE_DICT), CannotEvaluate)
 
 
-def test_inspect_result_routes_cannot_evaluate(provenance: ProvenanceRecord) -> None:
-    ok = InspectionResult(
-        sections={"variables": InspectionSection(data={"w": "2mm"}, read_status="ok")},
-        provenance=provenance,
-        template_text="[inspect] variables",
-    )
-    assert isinstance(_INSPECT.validate_python(ok.model_dump()), InspectionResult)
-    assert isinstance(_INSPECT.validate_python(_CANNOT_EVALUATE_DICT), CannotEvaluate)
+def test_attach_result_has_no_refusal_arm() -> None:
+    """attach deliberately carries NO SelectionRefused arm.
+
+    ``Session.attach`` runs no session gate — it IS the operation that
+    establishes a session, and it takes no selection stage — so no producer can
+    emit a refusal here. Advertising an arm nothing can inhabit would be its own
+    small dishonesty, so the union rejects one.
+    """
+    with pytest.raises(ValidationError):
+        _ATTACH.validate_python(_refusal_dict("refused_no_session"))
 
 
 def test_inspection_result_rejects_unknown_section_key(
-    provenance: ProvenanceRecord,
+    inspection_provenance: InspectionProvenance,
 ) -> None:
     # The Literal-typed dict key means only real section names are accepted.
     with pytest.raises(ValidationError):
         InspectionResult(
             sections={"not_a_section": InspectionSection(data=None, read_status="ok")},
-            provenance=provenance,
+            provenance=inspection_provenance,
+            template_text="x",
+        )
+
+
+def test_inspection_result_rejects_provenance_record(
+    provenance: ProvenanceRecord,
+) -> None:
+    """A structural read may not borrow solve provenance (ADR-20, gap 11).
+
+    ProvenanceRecord's extra solve fields are rejected by ``extra="forbid"``, so
+    the swap is enforced by the schema rather than by reviewer vigilance.
+    """
+    with pytest.raises(ValidationError):
+        InspectionResult(
+            sections={},
+            provenance=provenance.model_dump(),
             template_text="x",
         )
 
@@ -340,14 +590,12 @@ def test_preflight_and_process_schemas_construct() -> None:
         processes=[
             AedtProcess(
                 process_id=4321,
-                aedt_version="2026.1",
                 grpc_port=50051,
-                open_projects=["patch_antenna"],
             )
         ],
         template_text="[processes] 1 running",
     )
-    assert processes.processes[0].open_projects == ["patch_antenna"]
+    assert processes.processes[0].process_id == 4321
 
 
 def test_session_and_selection_schemas_construct(variation: Variation) -> None:
@@ -404,7 +652,7 @@ def test_validation_and_verified_result_schemas_construct(
 
 def test_record_schemas_construct() -> None:
     intent = IntentObject(
-        target_frequency=2.4e9, threshold_type="s11", threshold_value=-10.0
+        target_frequency_hz=2.4e9, threshold_type="s11", threshold_value=-10.0
     )
     state = DesignIntentState(intent=intent, template_text="[intent] set")
     assert state.intent == intent
@@ -445,7 +693,7 @@ def test_request_schemas_construct() -> None:
     assert (
         ComputeMetricsRequest(
             intent=IntentObject(
-                target_frequency=2.4e9, threshold_type="vswr", threshold_value=2.0
+                target_frequency_hz=2.4e9, threshold_type="vswr", threshold_value=2.0
             )
         ).intent.threshold_type
         == "vswr"

@@ -45,8 +45,19 @@ ThresholdType = Literal["s11", "vswr"]
 # surface; medium/high exist for Tier 2.3 but are unreachable today).
 RiskTier = Literal["safe", "medium", "high"]
 
-# AuditRecord.outcome (§2 AuditRecord)
-AuditOutcome = Literal["ok", "typed_error", "cannot_evaluate", "refused_by_gate"]
+# AuditRecord.outcome (§2 AuditRecord). The first four are §2 verbatim and are
+# never renamed; ``unknown_capability`` is the gap-9 amendment addition — the
+# broker can now audit a dispatch of a name the registry does not hold, which
+# previously could not be represented at all (a record with no honest tier to
+# state). It is the ONLY outcome permitted to carry ``risk_tier=None``, and it
+# must: see AuditRecord's both-or-neither validator.
+AuditOutcome = Literal[
+    "ok",
+    "typed_error",
+    "cannot_evaluate",
+    "refused_by_gate",
+    "unknown_capability",
+]
 
 
 class StrictModel(BaseModel):

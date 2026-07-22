@@ -8,6 +8,9 @@ S (as real/imag) survive the trip.
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+from pydantic import BaseModel, ValidationError
+
 from hfss_agent.contract import (
     AuditRecord,
     ComplexSample,
@@ -16,6 +19,7 @@ from hfss_agent.contract import (
     Finding,
     FreshnessEvidence,
     Inspection,
+    InspectionProvenance,
     InspectionSection,
     IntentObject,
     MetricRecord,
@@ -26,6 +30,7 @@ from hfss_agent.contract import (
     SolutionExists,
     SolvedData,
     SolveState,
+    StrictModel,
     Variation,
 )
 
@@ -102,7 +107,7 @@ def _snapshot(variation: Variation) -> DesignSnapshot:
             },
         ),
         intent=IntentObject(
-            target_frequency=2.4e9,
+            target_frequency_hz=2.4e9,
             threshold_type="s11",
             threshold_value=-10.0,
         ),
@@ -139,6 +144,53 @@ def test_provenance_record_instantiates(provenance: ProvenanceRecord) -> None:
     assert provenance.rule_version is None
 
 
+def test_inspection_provenance_instantiates(
+    inspection_provenance: InspectionProvenance,
+) -> None:
+    assert inspection_provenance.read_at.tzinfo is not None
+    # Exactly the six fields — no solve, metric, or judgment slot exists to be
+    # filled in later by something that never solved (ADR-20, gap 11). An AEDT
+    # version is none of those three, so the closed set still holds.
+    assert set(InspectionProvenance.model_fields) == {
+        "project",
+        "design",
+        "read_at",
+        "contract_version",
+        "wrapper_version",
+        "read_under_aedt_version",
+    }
+
+
+def test_inspection_provenance_rejects_naive_read_at() -> None:
+    # A naive instant would silently read as local time; "when was this read"
+    # must never be ambiguous by an offset.
+    with pytest.raises(ValidationError):
+        InspectionProvenance(
+            project="patch_antenna",
+            design="HFSSDesign1",
+            read_at=datetime(2026, 7, 17, 9, 30),
+            contract_version="snapshot-1.0.0",
+            wrapper_version="0.0.0",
+            read_under_aedt_version="2026.1",
+        )
+
+
+def test_inspection_provenance_shares_no_base_with_provenance_record() -> None:
+    """The two are independent types (ADR-20 chose Option B over a shared base).
+
+    Guards the decision itself: a later refactor that factors out a common
+    parent — the natural-looking cleanup — would let a field added for solve
+    provenance appear on a structural read, which is the exact dishonesty this
+    gap closed.
+    """
+    assert not issubclass(InspectionProvenance, ProvenanceRecord)
+    assert not issubclass(ProvenanceRecord, InspectionProvenance)
+    shared = set(InspectionProvenance.__mro__) & set(ProvenanceRecord.__mro__)
+    # StrictModel is contract-wide; anything narrower would be a shared base
+    # specific to these two.
+    assert shared == {StrictModel, BaseModel, object}
+
+
 def test_metric_record_instantiates(provenance: ProvenanceRecord) -> None:
     metric = MetricRecord(
         metric_name="s11_min",
@@ -155,7 +207,7 @@ def test_metric_record_instantiates(provenance: ProvenanceRecord) -> None:
 
 def test_intent_object_instantiates() -> None:
     intent = IntentObject(
-        target_frequency=2.4e9,
+        target_frequency_hz=2.4e9,
         threshold_type="vswr",
         threshold_value=2.0,
     )
@@ -175,3 +227,68 @@ def test_audit_record_instantiates() -> None:
     )
     assert record.risk_tier == "safe"
     assert record.outcome == "ok"
+    # The two gap-8/9 additions are OPTIONAL: a record built without them is
+    # valid and defaults to "inapplicable", so every pre-amendment on-disk log
+    # line still loads.
+    assert record.session_degraded is None
+
+
+# --- AuditRecord both-or-neither: risk_tier is None IFF outcome is unknown ----
+
+
+def _audit_record(**overrides: Any) -> AuditRecord:
+    fields: dict[str, Any] = {
+        "timestamp": datetime(2026, 7, 18, 10, 0, tzinfo=timezone.utc),
+        "tool_name": "compute_metrics",
+        "sanitized_arguments": {},
+        "selection_state": {},
+        "risk_tier": "safe",
+        "outcome": "ok",
+        "duration": 0.42,
+    }
+    fields.update(overrides)
+    return AuditRecord(**fields)
+
+
+def test_unknown_capability_outcome_accepts_a_null_tier() -> None:
+    # The positive half of the gap-9 pair: this combination is the ONLY way to
+    # record "a capability that isn't registered was requested", and it must
+    # construct.
+    record = _audit_record(risk_tier=None, outcome="unknown_capability")
+    assert record.risk_tier is None
+    assert record.outcome == "unknown_capability"
+
+
+@pytest.mark.parametrize(
+    "outcome", ["ok", "typed_error", "cannot_evaluate", "refused_by_gate"]
+)
+def test_null_tier_is_rejected_for_every_other_outcome(outcome: str) -> None:
+    # DIRECTION 1: a registered capability always dispatches under a declared
+    # tier. A null tier anywhere else would mean the log stopped recording
+    # which guard set the call ran under — silently, on a call that really ran.
+    with pytest.raises(ValidationError, match="unknown_capability"):
+        _audit_record(risk_tier=None, outcome=outcome)
+
+
+@pytest.mark.parametrize("tier", ["safe", "medium", "high"])
+def test_unknown_capability_outcome_is_rejected_with_any_tier(tier: str) -> None:
+    # DIRECTION 2: the fabrication guard. "safe" would be a false claim about
+    # an unknown thing and "high" would pollute the high-tier refusal trail —
+    # which is exactly why the None exists, so it must be mandatory here and
+    # not merely permitted.
+    with pytest.raises(ValidationError, match="requires risk_tier=None"):
+        _audit_record(risk_tier=tier, outcome="unknown_capability")
+
+
+def test_both_or_neither_is_enforced_on_deserialization_too() -> None:
+    # The validator must guard the READ path, not just construction: a
+    # hand-edited or corrupted log line carrying the forbidden pairing is
+    # rejected rather than believed. (The reader's two-arm policy then reports
+    # it as a corrupt line instead of raising — loud, never silent.)
+    line = _audit_record(risk_tier=None, outcome="unknown_capability").model_dump_json()
+    assert AuditRecord.model_validate_json(line).risk_tier is None
+
+    forged = line.replace('"risk_tier":null', '"risk_tier":"safe"')
+    assert forged != line  # the substitution really happened
+    with pytest.raises(ValidationError):
+        AuditRecord.model_validate_json(forged)

@@ -1,17 +1,18 @@
 """Internal session state and its deterministic projection onto ``SessionStatus``.
 
 This module is pure: no adapter, no I/O, no pyaedt. It holds the four internal
-health states, the crash/disconnect distinction the pinned contract cannot carry,
-and the ONE builder that turns internal state into the contract ``SessionStatus``
-— so ``connection_health`` and ``suspect`` are always derived from a single enum
-and can never contradict.
+health states, the crash/disconnect distinction, and the ONE builder that turns
+internal state into the contract ``SessionStatus`` — so ``connection_health``,
+``suspect`` and ``lost_cause`` are always derived from a single enum and can
+never contradict.
 
-Why the crash/disconnect distinction lives here and not in the contract:
 ``SessionStatus.connection_health`` is a two-value ``Literal`` (connected /
-disconnected), merged and pinned by the engine repo. Crash and disconnect both
-flatten to ``disconnected`` there, yet their recovery differs (relaunch + new pid
-vs. re-attach the same pid). We keep the difference in ``_LostCause`` and surface
-it only through deterministic ``template_text`` — never by widening the schema.
+disconnected), so crash and disconnect both flatten to ``disconnected`` there,
+yet their recovery differs (relaunch + new pid vs. re-attach the same pid). The
+contract's ``lost_cause`` (gap 2) now carries that difference as a typed field,
+so a consumer can branch on it rather than string-matching the prose; the
+internal ``_LostCause`` remains the richer source it is projected from, and the
+deterministic ``template_text`` still carries the human wording.
 
 Part 3 will test: the state→status table for all four states; that
 ``disconnected + suspect=true`` is unreachable and raises if forced; and the
@@ -67,8 +68,9 @@ class _SessionState:
 
 
 def build_status(state: _SessionState) -> SessionStatus:
-    """The ONLY constructor of ``SessionStatus``. Derives ``connection_health`` and
-    ``suspect`` from the single ``_Health`` enum so the two can never disagree.
+    """The ONLY constructor of ``SessionStatus``. Derives ``connection_health``,
+    ``suspect`` and ``lost_cause`` from the single ``_Health`` enum so the three
+    can never disagree.
     """
     if state.health is _Health.ATTACHED:
         connection_health, suspect, selection = "connected", False, state.chain
@@ -82,9 +84,29 @@ def build_status(state: _SessionState) -> SessionStatus:
     return SessionStatus(
         connection_health=connection_health,
         suspect=suspect,
+        lost_cause=_lost_cause_for(state),
         selection=selection,
         template_text=_template_for(state),
     )
+
+
+def _lost_cause_for(state: _SessionState) -> str | None:
+    """Project the internal ``_LostCause`` onto the contract's ``lost_cause``.
+
+    Splits on HEALTH first, deliberately. Internally ``lost_cause is None`` means
+    two entirely different things depending on the state it sits in: under LOST it
+    means "unverifiable" (lost, but for a non-transport reason we cannot honestly
+    name), while under DETACHED/ATTACHED/SUSPECT it means "there is no cause here
+    at all". Branching on the internal cause alone would collapse those two and
+    tell a never-attached caller their session was lost-and-unverifiable.
+    """
+    if state.health is not _Health.LOST:
+        return None  # ATTACHED / SUSPECT / DETACHED — no lost session to explain
+    if state.lost_cause is _LostCause.CRASH:
+        return "crash"
+    if state.lost_cause is _LostCause.DISCONNECT:
+        return "disconnect"
+    return "unverifiable"  # LOST with no cause — see _LostCause's docstring
 
 
 def _forbid_disconnected_suspect(connection_health: str, suspect: bool) -> None:

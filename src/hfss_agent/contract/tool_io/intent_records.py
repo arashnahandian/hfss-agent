@@ -35,10 +35,30 @@ class DesignIntentState(StrictModel):
 
 class AuditLog(StrictModel):
     """get_audit_log response (§3): the append-only audit records. Thin named
-    container over reused AuditRecord."""
+    container over reused AuditRecord, plus the two completeness flags.
+
+    ``torn_tail`` and ``corrupt_lines`` (gap 10, amended) make INCOMPLETENESS
+    machine-readable. The reader has always computed both — the response simply
+    discarded them, leaving prose in ``template_text`` as the only carrier, so a
+    programmatic consumer had to string-match a warning to learn the log is not
+    whole. They COMPLEMENT the prose rather than replace it: the two conditions
+    mean very different things and the template still says so in words.
+
+      * ``torn_tail`` — the final line was still mid-write when something
+        stopped (typically a crash). Benign and expected; that partial entry is
+        unreadable and not included.
+      * ``corrupt_lines`` — 1-indexed line numbers of malformed INTERIOR lines.
+        Alarming: real damage to the record stream. A non-empty tuple means the
+        surviving records are returned but completeness cannot be vouched for.
+
+    Both default to the "log is whole" values, so a reader that ignores them
+    behaves exactly as before.
+    """
 
     records: list[AuditRecord]
     template_text: str
+    torn_tail: bool = False
+    corrupt_lines: tuple[int, ...] = ()
 
 
 class AuditLogRange(StrictModel):

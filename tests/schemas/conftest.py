@@ -12,6 +12,7 @@ import pytest
 
 from hfss_agent.contract import (
     Applicability,
+    InspectionProvenance,
     ProvenanceRecord,
     Variation,
 )
@@ -43,6 +44,19 @@ def provenance(variation: Variation) -> ProvenanceRecord:
         wrapper_version="0.0.0",
         # engine_version / rule_version deliberately omitted: a gate finding has
         # neither, and they are optional.
+    )
+
+
+@pytest.fixture
+def inspection_provenance() -> InspectionProvenance:
+    """Provenance for a structural read — no solve fields, by construction."""
+    return InspectionProvenance(
+        project="patch_antenna",
+        design="HFSSDesign1",
+        read_at=datetime(2026, 7, 17, 9, 30, tzinfo=timezone.utc),
+        contract_version="snapshot-1.0.0",
+        wrapper_version="0.0.0",
+        read_under_aedt_version="2026.1",
     )
 
 

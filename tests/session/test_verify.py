@@ -31,7 +31,11 @@ from hfss_agent.adapter.results import (
     AdapterTimeout,
 )
 from hfss_agent.contract import Project
-from hfss_agent.contract.tool_io import CannotEvaluate, SelectionChain
+from hfss_agent.contract.tool_io import (
+    CannotEvaluate,
+    SelectionChain,
+    SelectionRefused,
+)
 from hfss_agent.session.status import _Health, _LostCause, _SessionState
 
 
@@ -101,7 +105,8 @@ def test_verify_fault_is_terminal_and_does_not_re_enter() -> None:
     assert session._state.lost_cause is _LostCause.DISCONNECT
     # LOST does not trigger verify, so the next op is refused (no re-entry loop)
     result = session.list_selection_options("project")
-    assert isinstance(result, CannotEvaluate) and "was lost" in result.limitation
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_no_session" and "was lost" in result.limitation
 
 
 # --- empty-chain liveness probe ----------------------------------------------
@@ -161,7 +166,11 @@ def test_post_verify_internal_error_escalates_instead_of_re_verifying() -> None:
     session, _ = attached(scenario)
     force_suspect(session)
     result = session.select("project", "patch_antenna")
+    # Deliberately still a CannotEvaluate, NOT a SelectionRefused: the select was
+    # ATTEMPTED and failed on a persistent internal error (_internal_error_refusal).
+    # A refusal type would claim we declined to try, which is not what happened.
     assert isinstance(result, CannotEvaluate)
+    assert not isinstance(result, SelectionRefused)
     assert "internal inconsistency" in result.reason
     assert "PyAEDT was not the cause" in result.limitation
     assert session._state.health is _Health.ATTACHED  # NOT suspect -> no loop
@@ -205,7 +214,8 @@ def test_resync_fault_overrides_attached_with_lost() -> None:
     result = session.list_selection_options("project")  # guarded op -> verify -> resync
     assert session._state.health is _Health.LOST
     assert session._state.lost_cause is _LostCause.DISCONNECT
-    assert isinstance(result, CannotEvaluate) and "was lost" in result.limitation
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_no_session" and "was lost" in result.limitation
 
 
 def test_full_chain_uses_every_stage() -> None:

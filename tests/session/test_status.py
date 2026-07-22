@@ -1,6 +1,7 @@
 """SessionStatus projection (status.py): determinism, three distinct LOST
-templates that never imply the wrong cause, and the reachable disconnected+suspect
-safety invariant.
+templates that never imply the wrong cause, the typed ``lost_cause`` projection
+for every internal situation, and the reachable disconnected+suspect safety
+invariant.
 """
 
 from __future__ import annotations
@@ -49,6 +50,44 @@ def test_lost_variants_do_not_imply_the_wrong_cause() -> None:
     # unverifiable: claims neither crash nor disconnect, and is a real sentence
     assert "exited" not in unver and "dropped" not in unver
     assert "no longer usable" in unver and "None" not in unver
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (_SessionState(health=_Health.ATTACHED), None),
+        (_SessionState(health=_Health.SUSPECT), None),
+        (_SessionState(health=_Health.DETACHED), None),
+        (_SessionState(health=_Health.LOST, lost_cause=_LostCause.CRASH), "crash"),
+        (
+            _SessionState(health=_Health.LOST, lost_cause=_LostCause.DISCONNECT),
+            "disconnect",
+        ),
+        (_SessionState(health=_Health.LOST, lost_cause=None), "unverifiable"),
+    ],
+    ids=["attached", "suspect", "detached", "lost_crash", "lost_disc", "lost_unver"],
+)
+def test_lost_cause_is_projected_for_every_internal_situation(
+    state: _SessionState, expected: str | None
+) -> None:
+    """All six internal situations, pinned (gap 2).
+
+    The load-bearing pair is DETACHED -> None vs. LOST-with-no-cause ->
+    "unverifiable": both are ``state.lost_cause is None`` internally, and they
+    must NOT collapse. A never-attached session has no cause to name; a LOST one
+    with no nameable transport cause does, and saying so is the honest answer.
+    """
+    assert build_status(state).lost_cause == expected
+
+
+def test_lost_cause_is_populated_only_when_disconnected() -> None:
+    # The field is the WHY of a disconnection, so it can only be populated when
+    # connection_health says there is one.
+    for health in _Health:
+        for cause in (None, _LostCause.CRASH, _LostCause.DISCONNECT):
+            status = build_status(_SessionState(health=health, lost_cause=cause))
+            if status.lost_cause is not None:
+                assert status.connection_health == "disconnected"
 
 
 def test_no_health_state_produces_disconnected_and_suspect() -> None:
