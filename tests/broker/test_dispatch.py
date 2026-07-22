@@ -25,7 +25,12 @@ from hfss_agent.broker import (
     UnknownCapability,
     classify_outcome,
 )
-from hfss_agent.contract.tool_io import CannotEvaluate, ExportRefused, MetricsRefused
+from hfss_agent.contract.tool_io import (
+    CannotEvaluate,
+    ExportRefused,
+    MetricsRefused,
+    SelectionRefused,
+)
 
 # A control character the sanitizer strips (ESC — an ANSI-injection vector).
 _HOSTILE = "name\x1b[31m"
@@ -119,12 +124,22 @@ def _metrics_refused() -> MetricsRefused:
     return MetricsRefused(failing_gates=[], template_text="Gates failed.")
 
 
+def _selection_refused(outcome: str = "refused_no_session") -> SelectionRefused:
+    return SelectionRefused(
+        outcome=outcome,
+        reason="no usable session",
+        limitation="attach first. PyAEDT was not reached.",
+        template_text="Cannot proceed: attach first.",
+    )
+
+
 @pytest.mark.parametrize(
     ("returned", "expected_outcome"),
     [
         (_cannot_evaluate(), "cannot_evaluate"),
         (_export_refused(), "refused_by_gate"),
         (_metrics_refused(), "refused_by_gate"),
+        (_selection_refused(), "refused_by_gate"),
         ("any plain value", "ok"),
     ],
 )
@@ -144,6 +159,7 @@ def test_classifier_is_total_including_broker_domain_backstop() -> None:
     assert classify_outcome(_cannot_evaluate()) == "cannot_evaluate"
     assert classify_outcome(_export_refused()) == "refused_by_gate"
     assert classify_outcome(_metrics_refused()) == "refused_by_gate"
+    assert classify_outcome(_selection_refused()) == "refused_by_gate"
     refusal = DispatchRefused(capability="c", tier="medium", reason="denied")
     assert classify_outcome(refusal) == "refused_by_gate"
     # Broker-domain failures normally surface as exceptions (audited
@@ -152,6 +168,34 @@ def test_classifier_is_total_including_broker_domain_backstop() -> None:
     assert classify_outcome(unknown) == "typed_error"
     assert classify_outcome(None) == "ok"
     assert classify_outcome(object()) == "ok"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["refused_no_session", "refused_selection_order", "refused_incomplete_selection"],
+)
+def test_every_selection_refusal_remedy_audits_as_a_refusal(outcome: str) -> None:
+    # All three remedies are refusals in the log. A new remedy tag added to the
+    # contract without a classifier branch would fall through to "ok" and hide a
+    # refusal — the one thing this log must never do.
+    assert classify_outcome(_selection_refused(outcome)) == "refused_by_gate"
+
+
+def test_selection_refused_is_classified_a_refusal_not_a_cannot_evaluate() -> None:
+    """ORDERING PIN for the gap-3 arm.
+
+    ``SelectionRefused`` and ``CannotEvaluate`` are disjoint types, so the
+    cannot_evaluate branch preceding the refusal branch is documentation rather
+    than a correctness dependency — but the CLASSIFICATION is load-bearing: a
+    session gate that never reached PyAEDT must be audited as a refusal, never
+    as a PyAEDT failure. (Contrast the DispatchRefused/BrokerOutcome pair below,
+    where order genuinely is load-bearing because the types are nested.)
+    """
+    assert classify_outcome(_selection_refused()) == "refused_by_gate"
+    assert classify_outcome(_selection_refused()) != "cannot_evaluate"
+    # And the reverse direction stays intact: an adapter-reported cannot_evaluate
+    # must not be swept into the broadened refusal arm.
+    assert classify_outcome(_cannot_evaluate()) == "cannot_evaluate"
 
 
 # --- exception and sink-failure paths ----------------------------------------

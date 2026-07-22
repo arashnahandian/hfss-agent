@@ -4,7 +4,13 @@ Drives the licence-free ``FakeAdapter``; faults are injected via ``OpBehavior``
 scenario scripting, never real sleeps (the session suite's determinism
 convention). This layer returns the RAW section dict on success — no
 ``InspectionResult``, ``template_text``, or provenance; that is the W-5 module's
-job — and reconciles every failure into a typed ``CannotEvaluate``.
+job.
+
+Its two non-success arms are kept apart on the refusal-vs-failure line: a session
+gate that declined BEFORE PyAEDT was reached (no usable session, an incomplete
+selection) is a ``SelectionRefused``; an operation that WAS attempted and did not
+complete (an adapter fault, or a genuine adapter cannot_evaluate) is a
+``CannotEvaluate``.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from hfss_agent.adapter.results import (
     AdapterTimeout,
 )
 from hfss_agent.contract import InspectionSection
-from hfss_agent.contract.tool_io import CannotEvaluate
+from hfss_agent.contract.tool_io import CannotEvaluate, SelectionRefused
 from hfss_agent.session import Session
 from hfss_agent.session.status import _Health, _LostCause
 
@@ -81,8 +87,11 @@ def test_nothing_selected_is_an_honest_selection_gap_refusal() -> None:
     # this call would wrongly return fake sections.
     session, _ = attached()
     result = session.inspect()
-    assert isinstance(result, CannotEvaluate)
-    # Honest: names the selection gap, never claims a PyAEDT failure.
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_incomplete_selection"
+    # Honest by TYPE now, not only by careful wording: a gate that never reached
+    # PyAEDT cannot be reported as "PyAEDT could not evaluate".
+    assert not isinstance(result, CannotEvaluate)
     blob = f"{result.reason} {result.limitation} {result.template_text}".lower()
     assert "project" in blob and "design" in blob
     assert "pyaedt" not in blob
@@ -95,7 +104,8 @@ def test_project_without_design_also_refuses_honestly() -> None:
     session, _ = attached()
     session.select("project", "patch_antenna")
     result = session.inspect()
-    assert isinstance(result, CannotEvaluate)
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_incomplete_selection"
     assert "pyaedt" not in result.limitation.lower()
     assert session._state.health is _Health.ATTACHED
 
@@ -103,7 +113,8 @@ def test_project_without_design_also_refuses_honestly() -> None:
 def test_detached_session_refuses_with_no_usable_session() -> None:
     session, _ = make_session()  # DETACHED, never attached
     result = session.inspect()
-    assert isinstance(result, CannotEvaluate)
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_no_session"
     assert result.reason == "no usable session"
 
 
@@ -126,9 +137,13 @@ def test_detached_session_refuses_with_no_usable_session() -> None:
 def test_session_fault_midinspect_yields_cannot_evaluate_and_transitions(
     fault, health, cause
 ) -> None:
+    # Deliberately still a CannotEvaluate, NOT a SelectionRefused: the read was
+    # ATTEMPTED and broke mid-flight. That is a failure, not a refusal, so the
+    # honest-refusal type would be the wrong one here (_session_fault_refusal).
     session, _ = _scoped(Scenario(behavior={"inspect": OpBehavior(fault=fault)}))
     result = session.inspect()
     assert isinstance(result, CannotEvaluate)
+    assert not isinstance(result, SelectionRefused)
     assert session._state.health is health
     assert session._state.lost_cause is cause
     # Change 2: the message names inspection, not the wrong "listing".

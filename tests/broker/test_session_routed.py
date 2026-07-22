@@ -14,7 +14,12 @@ from broker_helpers import DEFAULT_PID, FULL_CHAIN, session_broker
 
 from hfss_agent.adapter import AdapterTimeout
 from hfss_agent.adapter.fake import OpBehavior, Scenario
-from hfss_agent.contract.tool_io import CannotEvaluate, SelectionOptions, SessionStatus
+from hfss_agent.contract.tool_io import (
+    CannotEvaluate,
+    SelectionOptions,
+    SelectionRefused,
+    SessionStatus,
+)
 
 
 def test_attach_dispatches_and_audits_the_preattach_state() -> None:
@@ -96,15 +101,18 @@ def test_get_session_status_on_detached_session_is_a_pure_audited_read() -> None
     assert all(value is None for value in record.selection_state.values())
 
 
-def test_selection_order_refusal_flows_through_as_cannot_evaluate() -> None:
-    # Session-owned order enforcement (ADR-18 decision 4) surfaces through
-    # dispatch untouched: selecting with no attached session is a typed
-    # refusal, audited cannot_evaluate.
+def test_no_session_refusal_flows_through_as_a_gate_refusal() -> None:
+    # A session-owned gate (ADR-18 decision 4) surfaces through dispatch
+    # untouched: selecting with no attached session is refused by the
+    # no-usable-session gate — a typed SelectionRefused — and the audit log calls
+    # it a refusal, not cannot_evaluate, which would record a PyAEDT failure that
+    # never happened.
     broker, sink, _session, _fake = session_broker()
     result = broker.dispatch("select", {"stage": "project", "choice": "p"})
 
-    assert isinstance(result, CannotEvaluate)
-    assert sink.records[-1].outcome == "cannot_evaluate"
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_no_session"
+    assert sink.records[-1].outcome == "refused_by_gate"
 
 
 def test_select_adapter_fault_audits_ok_with_degraded_status() -> None:
@@ -168,15 +176,16 @@ def test_inspect_design_dispatches_to_session_inspect_and_audits_safe() -> None:
     assert record.outcome == "ok"
 
 
-def test_inspect_design_selection_gap_flows_through_as_cannot_evaluate() -> None:
+def test_inspect_design_selection_gap_flows_through_as_a_gate_refusal() -> None:
     # Freshly attached, nothing selected: the session's honest selection-gap
-    # refusal surfaces through dispatch and audits cannot_evaluate — NOT ok, and
+    # refusal surfaces through dispatch and audits refused_by_gate — NOT ok, and
     # NOT a fabricated PyAEDT failure.
     broker, sink, _session, _fake = session_broker()
     broker.dispatch("attach", {"process_id": DEFAULT_PID})
     result = broker.dispatch("inspect_design", {})
 
-    assert isinstance(result, CannotEvaluate)
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_incomplete_selection"
     assert "pyaedt" not in result.limitation.lower()
     assert sink.records[-1].tool_name == "inspect_design"
-    assert sink.records[-1].outcome == "cannot_evaluate"
+    assert sink.records[-1].outcome == "refused_by_gate"

@@ -2,15 +2,16 @@
 
 The §2 enumerations live in ``contract.common``; these are the §3 ones — the
 selection stages, inspection-section names, export format, and engine-presence
-status used across the tool I/O schemas — plus the two cross-cutting result
-shapes more than one tool group returns: the typed ``cannot_evaluate`` outcome
-and the ``ExportResult`` union.
+status used across the tool I/O schemas — plus the cross-cutting result shapes
+more than one tool group returns: the typed ``cannot_evaluate`` outcome, the
+``SelectionRefused`` session-gate refusal and the ``result_kind`` discriminator
+that routes it, and the ``ExportResult`` union.
 
 Nothing here imports anything I/O-capable; ``contract.tool_io`` inherits the
 contract subpackage's import-purity constraint (ADR-3).
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import Field
 
@@ -66,6 +67,82 @@ class CannotEvaluate(StrictModel):
     reason: str
     limitation: str
     template_text: str
+
+
+class SelectionRefused(StrictModel):
+    """Session-gate refusal arm: the session declined the call BEFORE it reached
+    PyAEDT (§3; ADR-16 decision 5; ADR-18 decision 6, gap 3).
+
+    Distinct from ``CannotEvaluate`` by construction, and that distinction is the
+    whole point. ``CannotEvaluate`` asserts "PyAEDT could not evaluate this" —
+    a claim about the solver. A session gate that refuses an out-of-order select,
+    an operation with no attached session, or an inspect with nothing selected
+    never reached PyAEDT at all, so reporting it as a ``CannotEvaluate`` would
+    blame the solver for the wrapper's own (correct) refusal. This type says what
+    actually happened.
+
+    Like ``ExportRefused``, the values name the caller's REMEDY, so the caller can
+    act on the tag alone without parsing the prose ``reason``/``limitation``:
+
+      * ``refused_no_session`` — no usable session (never attached, or lost):
+        attach / re-attach to a running process, then retry;
+      * ``refused_selection_order`` — the upstream stage is not selected yet:
+        select the upstream stage first (project before design, design before
+        setup, ...);
+      * ``refused_incomplete_selection`` — the operation needs a complete-enough
+        chain: select a project, then a design, then retry.
+
+    ``outcome`` has no default, for the same reason ``ExportRefused``'s has none:
+    a refusal must state WHICH remedy applies, and a defaulted discriminator
+    would let a new refusal site silently inherit the wrong one and send the
+    caller to a remedy that cannot fix their problem.
+    """
+
+    outcome: Literal[
+        "refused_no_session",
+        "refused_selection_order",
+        "refused_incomplete_selection",
+    ]
+    reason: str
+    limitation: str
+    template_text: str
+
+
+# Every ``outcome`` tag the session result unions route on. Named once here so
+# ``result_kind`` and the union arms cannot drift apart.
+_KNOWN_SESSION_OUTCOMES = frozenset(
+    {"cannot_evaluate", *get_args(SelectionRefused.model_fields["outcome"].annotation)}
+)
+
+
+def result_kind(value: object) -> str | None:
+    """Callable discriminator for the session result unions (``SelectResult``,
+    ``ListSelectionOptionsResult``, ``InspectDesignResult``).
+
+    Deliberately a CALLABLE discriminator, not the declared
+    ``Field(discriminator="outcome")`` that ``ExportResult`` uses. The success
+    types here — ``SessionStatus``, ``SelectionOptions``, ``InspectionResult`` —
+    are shared across roughly six unions and are the on-the-wire shape of
+    ``attach``/``select``/``get_session_status``; a declared discriminator would
+    force an ``outcome`` field onto all three, changing that wire format for
+    every consumer just to tag a refusal. So the success payloads stay UNTAGGED
+    and routing is explicit here instead.
+
+    The absence of an ``outcome`` key IS the success signal. An outcome that is
+    present but unrecognized returns ``None``, which makes pydantic raise rather
+    than silently routing a new, unhandled outcome to some arm that happens to
+    validate — a wrong-but-quiet result is exactly what this contract exists to
+    prevent.
+    """
+    if isinstance(value, dict):
+        if "outcome" not in value:
+            return "success"  # untagged payload == the success arm
+        outcome = value["outcome"]
+    else:
+        outcome = getattr(value, "outcome", None)
+        if outcome is None:
+            return "success"  # a success model instance carries no outcome
+    return outcome if outcome in _KNOWN_SESSION_OUTCOMES else None
 
 
 class ExportWritten(StrictModel):

@@ -82,6 +82,7 @@ from hfss_agent.contract.tool_io import (
     ExportWritten,
     MetricsRefused,
     SelectionChain,
+    SelectionRefused,
 )
 from hfss_agent.session import Session
 
@@ -183,7 +184,15 @@ def classify_outcome(result: object) -> AuditOutcome:
     """
     if isinstance(result, CannotEvaluate):
         return "cannot_evaluate"
-    if isinstance(result, (ExportRefused, MetricsRefused, DispatchRefused)):
+    # SelectionRefused sits with the other refusals, NOT with cannot_evaluate:
+    # a session gate declined before PyAEDT was reached, which is precisely the
+    # "refused by a wrapper gate or guard" reading. ``CannotEvaluate`` is checked
+    # first only because it is the narrower, non-refusal claim — the two types are
+    # disjoint, so this pair's order is documentation, not a correctness
+    # dependency (unlike the BrokerOutcome ordering below, which is).
+    if isinstance(
+        result, (ExportRefused, MetricsRefused, SelectionRefused, DispatchRefused)
+    ):
         return "refused_by_gate"
     # ORDER MATTERS: DispatchRefused IS a BrokerOutcome, so the refusal arm
     # above must precede this one — swapped, every refusal would silently

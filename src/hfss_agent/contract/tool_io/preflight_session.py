@@ -9,11 +9,18 @@ not a cannot_evaluate. attach / select / get_session_status share one
 SessionStatus schema.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Discriminator, Tag
 
 from hfss_agent.contract.common import StrictModel, UntrustedStr, Variation
 from hfss_agent.contract.design_snapshot import Environment, Project
-from hfss_agent.contract.tool_io.common import CannotEvaluate, SelectionStage
+from hfss_agent.contract.tool_io.common import (
+    CannotEvaluate,
+    SelectionRefused,
+    SelectionStage,
+    result_kind,
+)
 
 # --- preflight_environment ---------------------------------------------------
 
@@ -152,6 +159,37 @@ class SelectRequest(StrictModel):
 # --- response unions ---------------------------------------------------------
 # preflight_environment -> PreflightReport and list_aedt_processes ->
 # AedtProcessList have NO CannotEvaluate arm (see module docstring).
+
+# attach has NO SelectionRefused arm, and that is a verified property of the
+# implementation, not an oversight: ``Session.attach`` runs no session gate — it
+# IS the operation that establishes a session, so "no usable session" cannot
+# apply, and it takes no selection stage, so neither ordering nor selection
+# completeness can apply. Its only non-success outcomes are a faulted attach
+# (reported as a DETACHED SessionStatus) and a faithfully-mapped adapter
+# cannot_evaluate. Giving it a refusal arm would advertise a state no producer
+# can emit.
 AttachResult = SessionStatus | CannotEvaluate
-ListSelectionOptionsResult = SelectionOptions | CannotEvaluate
-SelectResult = SessionStatus | CannotEvaluate
+
+# select / list_selection_options route through the CALLABLE ``result_kind``
+# discriminator rather than a declared ``Field(discriminator="outcome")`` (see
+# result_kind's docstring): SessionStatus and SelectionOptions are shared across
+# other unions, so they must NOT grow an ``outcome`` field. Success payloads stay
+# untagged; every refusal and the cannot_evaluate arm are routed by their tag.
+# SelectionRefused appears once per remedy tag — the arms are the same type, kept
+# apart so an unknown outcome cannot slip in under a broad tag.
+ListSelectionOptionsResult = Annotated[
+    Annotated[SelectionOptions, Tag("success")]
+    | Annotated[CannotEvaluate, Tag("cannot_evaluate")]
+    | Annotated[SelectionRefused, Tag("refused_no_session")]
+    | Annotated[SelectionRefused, Tag("refused_selection_order")]
+    | Annotated[SelectionRefused, Tag("refused_incomplete_selection")],
+    Discriminator(result_kind),
+]
+SelectResult = Annotated[
+    Annotated[SessionStatus, Tag("success")]
+    | Annotated[CannotEvaluate, Tag("cannot_evaluate")]
+    | Annotated[SelectionRefused, Tag("refused_no_session")]
+    | Annotated[SelectionRefused, Tag("refused_selection_order")]
+    | Annotated[SelectionRefused, Tag("refused_incomplete_selection")],
+    Discriminator(result_kind),
+]

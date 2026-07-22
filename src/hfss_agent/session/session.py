@@ -22,16 +22,26 @@ absorbed:
 
   * DEVIATION FROM ADR-16 decision 5 (cannot_evaluate narrowing): ADR-16 narrowed
     ``cannot_evaluate`` to mean specifically "PyAEDT could not evaluate this", to
-    avoid misattributing failures. The pinned two/three-arm unions ``SelectResult``
-    (SessionStatus | CannotEvaluate) and ``ListSelectionOptionsResult``
-    (SelectionOptions | CannotEvaluate) give no other typed arm for a refusal, so
-    this module returns ``CannotEvaluate`` for several NON-PyAEDT outcomes:
-    selection-order refusals, no-usable-session refusals, a session fault during a
-    listing, and a surfaced post-verify internal error. Every such use states
-    plainly in ``reason``/``limitation`` that PyAEDT was not reached/at fault. This
-    is a knowing misattribution, chosen over the alternative — returning an
-    unchanged ``SessionStatus`` — which ADR-16 decision 4 designed against because
-    it makes a refusal indistinguishable from a success without parsing text.
+    avoid misattributing failures. The session-GATE refusals that once had to
+    borrow that type no longer do: they return ``SelectionRefused``, whose tag
+    names the caller's remedy and whose whole point is that PyAEDT was never
+    reached (contract gap 3). TWO uses of ``CannotEvaluate`` remain here that are
+    not adapter-reported, and they are deliberate:
+
+      - ``_session_fault_refusal`` — a read (list_selection_options / inspect)
+        that FAULTED mid-flight. Neither tool has a ``SessionStatus`` arm to
+        report the resulting transition through, so the fault is surfaced here.
+      - ``_internal_error_refusal`` — a post-verify ``AdapterInternalError``,
+        escalated rather than allowed to loop through verify forever.
+
+    Both sit on the correct side of the refusal-vs-failure line: an operation was
+    ATTEMPTED and did not complete, which is a failure, not a refusal — so the
+    honest refusal type would be the wrong one for them. What stays inaccurate is
+    only the attribution of the failure to PyAEDT specifically; each states
+    plainly in ``reason``/``limitation`` that PyAEDT was not reached or not the
+    cause. Both remain preferable to the alternative ADR-16 decision 4 designed
+    against — returning an unchanged ``SessionStatus``, which makes a
+    non-success indistinguishable from a success without parsing text.
 
 Part 3 will test (matrix not built here): the reflection guard test; per-fault
 transitions incl. escalation; attach success/fault; prerequisite refusals per
@@ -66,6 +76,7 @@ from hfss_agent.contract.tool_io import (
     SelectionChain,
     SelectionOption,
     SelectionOptions,
+    SelectionRefused,
     SelectionStage,
     SelectResult,
     SessionStatus,
@@ -104,6 +115,12 @@ _CLEAR_FROM: dict[SelectionStage, tuple[str, ...]] = {
 # during re-verification is terminal; a fault during a normal operation is
 # recoverable. One classifier, two explicitly-named contexts.
 _FaultContext = Literal["verify", "operation"]
+
+# The SelectionRefused remedy tags this layer can emit — the contract Literal,
+# restated as an alias so ``_refused``'s signature reads at the call site.
+_RefusalOutcome = Literal[
+    "refused_no_session", "refused_selection_order", "refused_incomplete_selection"
+]
 
 _F = TypeVar("_F", bound=Callable[..., object])
 
@@ -200,26 +217,37 @@ class Session:
     def list_selection_options(
         self, stage: SelectionStage
     ) -> ListSelectionOptionsResult:
-        """List the choices for a stage (order-enforced). Returns ``SelectionOptions``
-        or a typed ``CannotEvaluate`` (see the ADR-16 deviation note)."""
+        """List the choices for a stage (order-enforced). Returns
+        ``SelectionOptions``, a ``SelectionRefused`` when a session gate declines
+        before PyAEDT is reached, or a ``CannotEvaluate`` when an attempted read
+        did not complete (see the ADR-16 deviation note)."""
         return self._do_list_options(stage)
 
     @reconnect_guarded
     def select(self, stage: SelectionStage, choice: str) -> SelectResult:
         """Select a stage into the chain (order-enforced). Success returns the
-        updated ``SessionStatus``; a refusal returns a typed ``CannotEvaluate``."""
+        updated ``SessionStatus``; a session gate that declines before PyAEDT is
+        reached returns a typed ``SelectionRefused``."""
         return self._do_select(stage, choice)
 
     @reconnect_guarded
     def inspect(
         self, sections: list[InspectionSectionName] | None = None
-    ) -> dict[InspectionSectionName, InspectionSection] | CannotEvaluate:
+    ) -> (
+        dict[InspectionSectionName, InspectionSection]
+        | SelectionRefused
+        | CannotEvaluate
+    ):
         """Read the requested inspection sections (all eight when ``sections`` is
         None). Success returns the RAW section dict — deliberately not an
         ``InspectionResult``: this layer holds no ``template_text`` or provenance,
-        which the W-5 inspect module assembles downstream. A refusal (no usable
-        session, a selection gap, an adapter fault, or a genuine adapter
-        ``cannot_evaluate``) returns a typed ``CannotEvaluate``."""
+        which the W-5 inspect module assembles downstream (not built here).
+
+        The two failure arms are kept apart on the refusal-vs-failure line: a
+        session gate that declined before PyAEDT was reached (no usable session,
+        a selection gap) returns ``SelectionRefused``; an operation that WAS
+        attempted and did not complete (an adapter fault, or a genuine adapter
+        ``cannot_evaluate``) returns ``CannotEvaluate``."""
         return self._do_inspect(sections)
 
     def get_session_status(self) -> SessionStatus:
@@ -278,7 +306,11 @@ class Session:
 
     def _do_inspect(
         self, sections: list[InspectionSectionName] | None
-    ) -> dict[InspectionSectionName, InspectionSection] | CannotEvaluate:
+    ) -> (
+        dict[InspectionSectionName, InspectionSection]
+        | SelectionRefused
+        | CannotEvaluate
+    ):
         refusal = self._require_usable_session()
         if refusal is not None:
             return refusal
@@ -603,11 +635,15 @@ class Session:
 
     # --- refusals & helpers ---------------------------------------------------
 
-    def _require_usable_session(self) -> CannotEvaluate | None:
+    def _require_usable_session(self) -> SelectionRefused | None:
         """None if ATTACHED; otherwise a typed refusal. Covers the explicit
         LOST-on-operation and DETACHED cases: the guard only re-verifies SUSPECT,
         so a non-ATTACHED state here means never-attached or verify-failed, and we
-        never auto-re-attach — the user must (attach-only, ADR-18)."""
+        never auto-re-attach — the user must (attach-only, ADR-18).
+
+        BOTH states refuse under the same ``refused_no_session`` tag because the
+        tag names the REMEDY and the remedy is identical (attach / re-attach);
+        which state we were in is what the prose ``limitation`` distinguishes."""
         if self._state.health is _Health.ATTACHED:
             return None
         if self._state.health is _Health.LOST:
@@ -620,9 +656,9 @@ class Session:
                 "no AEDT session is attached; attach to a running process first. "
                 "PyAEDT was not reached."
             )
-        return self._cannot_evaluate("no usable session", limitation)
+        return self._refused("refused_no_session", "no usable session", limitation)
 
-    def _require_project_and_design(self) -> CannotEvaluate | None:
+    def _require_project_and_design(self) -> SelectionRefused | None:
         """None if a project AND design are both selected; otherwise an honest
         selection-gap refusal. Answered from the session's own chain (the single
         source of truth), never by asking the adapter.
@@ -637,7 +673,8 @@ class Session:
         chain = self._state.chain
         if chain.project is not None and chain.design is not None:
             return None
-        return self._cannot_evaluate(
+        return self._refused(
+            "refused_incomplete_selection",
             "incomplete selection",
             "a project and a design must both be selected before the design can "
             "be inspected; select a project, then a design, then retry.",
@@ -650,7 +687,7 @@ class Session:
             return True  # project needs only an attached session (checked earlier)
         return _saved_value(self._state.chain, upstream) is not None
 
-    def _prerequisite_refusal(self, stage: SelectionStage) -> CannotEvaluate:
+    def _prerequisite_refusal(self, stage: SelectionStage) -> SelectionRefused:
         upstream = _UPSTREAM[stage]
         if upstream is None:
             limitation = (
@@ -663,7 +700,7 @@ class Session:
                 "selection-order refusal enforced by the session; PyAEDT was not "
                 "reached."
             )
-        return self._cannot_evaluate("selection order", limitation)
+        return self._refused("refused_selection_order", "selection order", limitation)
 
     def _session_fault_refusal(self, operation: str) -> CannotEvaluate:
         """Report (for a read with no SessionStatus arm — list_selection_options
@@ -711,7 +748,24 @@ class Session:
         )
 
     @staticmethod
+    def _refused(
+        outcome: _RefusalOutcome, reason: str, limitation: str
+    ) -> SelectionRefused:
+        """The choke point for every SESSION-GATE refusal — a call this layer
+        declined before it ever reached PyAEDT. ``outcome`` names the caller's
+        remedy, so the tag alone is actionable without parsing the prose."""
+        return SelectionRefused(
+            outcome=outcome,
+            reason=reason,
+            limitation=limitation,
+            template_text=f"Cannot proceed: {limitation}",
+        )
+
+    @staticmethod
     def _cannot_evaluate(reason: str, limitation: str) -> CannotEvaluate:
+        """The choke point for the two remaining CannotEvaluate uses: an
+        operation that WAS attempted and did not complete (see the DEVIATION
+        FROM ADR-16 note). Session-gate refusals use ``_refused`` instead."""
         return CannotEvaluate(
             reason=reason,
             limitation=limitation,
