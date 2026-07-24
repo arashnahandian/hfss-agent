@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+from hfss_agent.contract import Environment
 from hfss_agent.contract.tool_io import SelectionChain, SessionStatus
 
 
@@ -58,6 +59,18 @@ class _SessionState:
     ``lost_cause`` is meaningful only when ``health is LOST``. ``note`` carries a
     one-line, deterministic explanation for the DETACHED (failed attach), LOST
     (unverifiable), and ATTACHED (partial re-verify) templates.
+
+    ``environment`` is the identity block (AEDT / PyAEDT / Python / wrapper
+    versions) the adapter returns from a successful attach. ITS RULE, which the
+    existing transitions already satisfy and must keep satisfying: a
+    ``replace()`` transition PRESERVES it (same process, still attached), and a
+    fresh ``_SessionState(...)`` construction DROPS it (the session ended). That
+    split is load-bearing, not tidiness — the field's sole consumer is
+    provenance, so it must exist only when stamping it would be honest. Turning
+    the fresh construction in ``_to_lost`` into a ``replace()`` (say, to carry
+    ``environment`` forward next to ``last_process_id``) would silently create a
+    stale stamp: a record claiming an AEDT version read from a process that is
+    already gone and may have been superseded by a relaunched one.
     """
 
     health: _Health = _Health.DETACHED
@@ -65,6 +78,7 @@ class _SessionState:
     last_process_id: int | None = None
     lost_cause: _LostCause | None = None
     note: str | None = None
+    environment: Environment | None = None
 
 
 def build_status(state: _SessionState) -> SessionStatus:

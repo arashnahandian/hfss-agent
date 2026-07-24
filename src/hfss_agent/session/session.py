@@ -67,7 +67,7 @@ from hfss_agent.adapter import (
     AdapterTimeout,
     SessionFault,
 )
-from hfss_agent.contract import InspectionSection
+from hfss_agent.contract import Environment, InspectionSection
 from hfss_agent.contract.tool_io import (
     AttachResult,
     CannotEvaluate,
@@ -205,11 +205,17 @@ class Session:
                 note=self._attach_failure_note(process_id, outcome),
             )
             return build_status(self._state)
-        # Success: outcome is an Environment (identity block, surfaced elsewhere).
+        # Success: outcome is an Environment (identity block). RETAINED here —
+        # this is the ONE site that populates it, because attach is the only way
+        # into ATTACHED and the only moment those versions are read. Every later
+        # transition already gets the right answer for free: same-process ones use
+        # replace() (preserve), session-ending ones construct fresh (drop). See
+        # _SessionState's docstring for why that split must stay as it is.
         self._state = _SessionState(
             health=_Health.ATTACHED,
             chain=SelectionChain(process_id=process_id),
             last_process_id=process_id,
+            environment=outcome,
         )
         return build_status(self._state)
 
@@ -256,6 +262,26 @@ class Session:
         suspect session is reported honestly as suspect rather than silently
         re-verified."""
         return build_status(self._state)
+
+    def get_environment(self) -> Environment | None:
+        """The identity block captured at attach — AEDT, PyAEDT, Python and
+        wrapper versions — or None when no process is attached.
+
+        A pure read of internal state, like ``get_session_status``: it makes no
+        adapter call, so it cannot fault, transition, or trigger verify. That is
+        why it is exempt from ``@reconnect_guarded`` (the ``_EXEMPT`` set in
+        tests/session/test_guard.py, where widening shows up as a test diff).
+
+        Deliberately a METHOD, not a property: the guard's reflection test walks
+        public members with ``inspect.isfunction``, which a property is not — so a
+        property would slip past the guard check silently instead of being seen
+        and explicitly exempted.
+
+        None is an honest answer, not a placeholder: a DETACHED or LOST session
+        has no live process whose versions anything could truthfully be stamped
+        with. Callers that need the value rather than the question go through the
+        broker's raising accessor."""
+        return self._state.environment
 
     # --- operation bodies -----------------------------------------------------
 

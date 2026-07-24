@@ -13,6 +13,7 @@ from hfss_agent.broker.broker import (
     Broker,
     BrokerOutcome,
     DispatchRefused,
+    NoAttachedSessionError,
     UnknownCapability,
     audit_capabilities,
     classify_outcome,
@@ -42,6 +43,7 @@ __all__ = [
     "UnknownCapability",
     "DispatchRefused",
     "AuditFailure",
+    "NoAttachedSessionError",
     # registry
     "CapabilityRegistry",
     "CapabilitySpec",
