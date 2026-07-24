@@ -11,6 +11,7 @@ with shared primitives (the ``Variation`` key and §2's enumerated value sets) i
 
 from hfss_agent.contract.audit_record import AuditRecord
 from hfss_agent.contract.common import (
+    CONTRACT_VERSION,
     AuditOutcome,
     ConvergenceStatus,
     FindingClassification,
@@ -54,6 +55,7 @@ __all__ = [
     "IntentObject",
     "AuditRecord",
     # Shared primitives and §2 enumerations
+    "CONTRACT_VERSION",
     "Variation",
     "StrictModel",
     "UntrustedStr",

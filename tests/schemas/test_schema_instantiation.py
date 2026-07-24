@@ -12,6 +12,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from hfss_agent.contract import (
+    CONTRACT_VERSION,
     AuditRecord,
     ComplexSample,
     DesignSnapshot,
@@ -35,9 +36,17 @@ from hfss_agent.contract import (
 )
 
 
+def test_contract_version_literal_is_pinned() -> None:
+    # Every other site imports CONTRACT_VERSION rather than restating the
+    # literal, so a stray edit to the constant would flow through and pass every
+    # other test silently. This one pin is what makes a change to the schema
+    # version space loud — bumping it here is the deliberate, reviewed act.
+    assert CONTRACT_VERSION == "snapshot-1.0.0"
+
+
 def _snapshot(variation: Variation) -> DesignSnapshot:
     return DesignSnapshot(
-        contract_version="snapshot-1.0.0",
+        contract_version=CONTRACT_VERSION,
         created_at=datetime(2026, 7, 18, 10, 0, tzinfo=timezone.utc),
         snapshot_id="snap-001",
         environment=Environment(
@@ -169,7 +178,7 @@ def test_inspection_provenance_rejects_naive_read_at() -> None:
             project="patch_antenna",
             design="HFSSDesign1",
             read_at=datetime(2026, 7, 17, 9, 30),
-            contract_version="snapshot-1.0.0",
+            contract_version=CONTRACT_VERSION,
             wrapper_version="0.0.0",
             read_under_aedt_version="2026.1",
         )
