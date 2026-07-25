@@ -173,8 +173,8 @@ class SolvedData(StrictModel):
 
 
 class DesignSnapshot(StrictModel):
-    """The versioned design snapshot (W-8) — semver-tagged, e.g.
-    ``snapshot-1.0.0`` in ``contract_version``.
+    """The versioned design snapshot (W-8) — ``contract_version`` carries the
+    semver-tagged schema version (``common.CONTRACT_VERSION``).
 
     See System Design §2. ``intent`` is the only optional top-level block: a
     snapshot is valid whether or not the user has set a design intent.

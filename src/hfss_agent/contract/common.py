@@ -19,6 +19,15 @@ from pydantic import BaseModel, ConfigDict
 # flow.
 UntrustedStr = str
 
+# The contract SCHEMA version — the ``snapshot-...`` space stamped into every
+# record's ``contract_version`` field (ADR-21 dec. 10). This is deliberately
+# SEPARATE from the package version (pyproject's, surfaced as
+# ``wrapper_version``): ADR-21 dec. 10 keeps the two spaces independent, so the
+# schema shape and the package release can move without forcing each other.
+# Every site imports this one constant; the pin test in the schema suite is what
+# makes an accidental edit to its value loud.
+CONTRACT_VERSION = "snapshot-1.0.0"
+
 # --- Enumerated value sets fixed verbatim by System Design §2 ----------------
 
 # InspectionSection.read_status (§2 inspection bullet)

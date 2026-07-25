@@ -21,6 +21,11 @@ _EXEMPT = {
     # get_session_status is a pure read of internal state — it makes no adapter
     # call and must report suspect honestly rather than silently re-verify.
     "get_session_status",
+    # get_environment is the same category: a pure read of the attach-time
+    # identity block already held in internal state, with no adapter call to
+    # guard. Verifying before it would be pure cost — it cannot fault, and it
+    # reports None (no attached process) rather than anything a verify could fix.
+    "get_environment",
 }
 
 

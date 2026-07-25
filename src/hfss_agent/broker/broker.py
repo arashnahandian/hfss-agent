@@ -77,7 +77,13 @@ from hfss_agent.broker.files.locations import default_audit_log_path
 from hfss_agent.broker.files.paths import validate_export_path
 from hfss_agent.broker.files.writes import atomic_replace_write, exclusive_create_write
 from hfss_agent.broker.registry import CapabilityRegistry, CapabilitySpec
-from hfss_agent.contract import AuditOutcome, AuditRecord, IntentObject, RiskTier
+from hfss_agent.contract import (
+    AuditOutcome,
+    AuditRecord,
+    Environment,
+    IntentObject,
+    RiskTier,
+)
 from hfss_agent.contract.tool_io import (
     AuditLog,
     AuditLogRange,
@@ -169,6 +175,33 @@ class AuditFailure(BrokerOutcome):
     unaudited_outcome: AuditOutcome
     detail: str
     notice: str
+
+
+class NoAttachedSessionError(Exception):
+    """Attach-established metadata was asked for while no session is attached —
+    never attached, or the session was lost.
+
+    RAISED, not returned as a ``BrokerOutcome``: the outcome types above travel
+    back through ``dispatch``, which audits and classifies them. The control-plane
+    accessor that raises this is deliberately NOT dispatchable, so it has no
+    audited result arm to carry a refusal through — an exception is the honest
+    shape. Broker-domain like ``BrokerFileError`` (and named the same way: the
+    domain that failed, stated plainly), never a contract type — the
+    wrapper->engine contract does not model broker access errors, and it is
+    closed at 0.1.0.
+
+    WHY RAISE RATHER THAN RETURN ``None``: the invariant is not "the version may
+    or may not exist"; it is "the version exists whenever we are connected, and
+    asking while disconnected is an invalid call". An Optional flattens those two
+    into one shape and quietly invites a caller to stamp a missing version onto a
+    record. Raising models the invariant as it actually is.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "no AEDT session is attached, so there is no attach-time environment "
+            "to report; attach to a running AEDT process first"
+        )
 
 
 def classify_outcome(result: object) -> AuditOutcome:
@@ -559,6 +592,47 @@ class Broker:
             bytes_written=written,
             template_text=f'Exported {written} bytes to "{path}".',
         )
+
+    # --- control-plane accessors (non-dispatchable) ---------------------------
+    #
+    # THE RULE, stated once here so this does not become an escape hatch:
+    # non-dispatchable broker accessors may expose immutable lifecycle and
+    # environment metadata established by the broker or its session. They must
+    # not expose the session itself, perform domain operations, or provide an
+    # alternate route around capability dispatch.
+    #
+    # What that implies, concretely — an accessor added below must be ALL of:
+    # read-only; describing lifecycle/environment state rather than domain data
+    # (a design read is domain data and is a capability, not an accessor);
+    # returning an immutable value, never the session object or anything holding
+    # capabilities; triggering no external-program work (no AEDT, no disk, no
+    # network); and performing no mutation, no dispatch, and no lazy expensive
+    # read. Anything failing one of those tests is a capability and belongs in the
+    # registry, where the tier gate, confirmation and audit apply to it.
+    #
+    # ``write_export`` above is the precedent for a broker method that is "not
+    # itself a registered capability" — but it is a guarded WRITE PRIMITIVE for
+    # the capabilities that will call it, not an accessor, and this rule does not
+    # stretch to cover it.
+
+    def require_environment(self) -> Environment:
+        """The attached session's environment identity block (AEDT, PyAEDT,
+        Python and wrapper versions) — the provenance stamp's only source of
+        those versions. Raises ``NoAttachedSessionError`` when nothing is
+        attached. Not registered, not in ``session_routed_specs``, not
+        dispatchable: it is a control-plane accessor under the rule above.
+
+        READ-THROUGH ON EVERY CALL, NEVER CACHED HERE. The session owns the
+        lifecycle and can go LOST, or be re-attached to a DIFFERENT process,
+        without notifying the broker — so a copy held on the broker would outlive
+        the process it describes and let a record claim an AEDT version read from
+        a superseded one. That lying stamp is the exact failure this accessor
+        exists to prevent, so the read stays live.
+        """
+        environment = self._session.get_environment()
+        if environment is None:
+            raise NoAttachedSessionError()
+        return environment
 
 
 def session_routed_specs(session: Session) -> tuple[CapabilitySpec, ...]:

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from hfss_agent.contract import (
+    CONTRACT_VERSION,
     Applicability,
     InspectionProvenance,
     ProvenanceRecord,
@@ -40,7 +41,7 @@ def provenance(variation: Variation) -> ProvenanceRecord:
         solve_timestamp=datetime(2026, 7, 17, 9, 30, tzinfo=timezone.utc),
         freshness_status="fresh",
         snapshot_id="snap-001",
-        contract_version="snapshot-1.0.0",
+        contract_version=CONTRACT_VERSION,
         wrapper_version="0.0.0",
         # engine_version / rule_version deliberately omitted: a gate finding has
         # neither, and they are optional.
@@ -54,7 +55,7 @@ def inspection_provenance() -> InspectionProvenance:
         project="patch_antenna",
         design="HFSSDesign1",
         read_at=datetime(2026, 7, 17, 9, 30, tzinfo=timezone.utc),
-        contract_version="snapshot-1.0.0",
+        contract_version=CONTRACT_VERSION,
         wrapper_version="0.0.0",
         read_under_aedt_version="2026.1",
     )
