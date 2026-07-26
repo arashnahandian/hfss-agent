@@ -1,4 +1,4 @@
-"""The five session-routed capabilities dispatched end-to-end over the
+"""The six session-routed capabilities dispatched end-to-end over the
 ``FakeAdapter`` — the pipeline proven against the real ``Session``, not only
 synthetic handlers (approved plan §2/§13). Includes the capture-before proof
 (``select``, the capability that changes the chain) and adapter-fault paths.
@@ -14,6 +14,8 @@ from broker_helpers import DEFAULT_PID, FULL_CHAIN, session_broker
 
 from hfss_agent.adapter import AdapterTimeout
 from hfss_agent.adapter.fake import OpBehavior, Scenario
+from hfss_agent.broker import session_routed_specs
+from hfss_agent.contract import NativeValidation
 from hfss_agent.contract.tool_io import (
     CannotEvaluate,
     SelectionOptions,
@@ -230,3 +232,57 @@ def test_inspect_design_selection_gap_flows_through_as_a_gate_refusal() -> None:
     assert "pyaedt" not in result.limitation.lower()
     assert sink.records[-1].tool_name == "inspect_design"
     assert sink.records[-1].outcome == "refused_by_gate"
+
+
+def test_validate_native_dispatches_to_the_session_method_and_audits_safe() -> None:
+    # validate_native routes to session.validate_native and returns the RAW
+    # NativeValidation (no block, no provenance at this layer), audited
+    # safe-tier / ok. The tool the MCP surface will expose is validate_setup,
+    # assembled by W-6 on top of THIS capability — the two names differ on
+    # purpose, so W-6 gets no inspect_design-style collision to disambiguate.
+    broker, sink, _session, _fake = session_broker()
+    broker.dispatch("attach", {"process_id": DEFAULT_PID})
+    broker.dispatch("select", {"stage": "project", "choice": "patch_antenna"})
+    broker.dispatch("select", {"stage": "design", "choice": "HFSSDesign1"})
+    result = broker.dispatch("validate_native", {})
+
+    assert isinstance(result, NativeValidation)
+    assert result.source == "hfss_native"
+    assert result.raw_output == ["Design validation completed. 0 errors, 0 warnings."]
+    record = sink.records[-1]
+    assert record.tool_name == "validate_native"
+    assert record.risk_tier == "safe"
+    assert record.outcome == "ok"
+
+
+def test_validate_native_selection_gap_flows_through_as_a_gate_refusal() -> None:
+    # Freshly attached, nothing selected: the session's honest selection-gap
+    # refusal surfaces through dispatch and audits refused_by_gate — NOT ok, and
+    # NOT a fabricated PyAEDT failure. The message must also name the operation
+    # it actually blocked, which is what makes it actionable.
+    broker, sink, _session, _fake = session_broker()
+    broker.dispatch("attach", {"process_id": DEFAULT_PID})
+    result = broker.dispatch("validate_native", {})
+
+    assert isinstance(result, SelectionRefused)
+    assert result.outcome == "refused_incomplete_selection"
+    assert "pyaedt" not in result.limitation.lower()
+    assert "inspect" not in result.limitation.lower()
+    assert sink.records[-1].tool_name == "validate_native"
+    assert sink.records[-1].outcome == "refused_by_gate"
+
+
+def test_validate_native_is_registered_safe_and_bound_to_the_session_method() -> None:
+    # Thin delegation (ADR-18 decision 4): the handler IS the bound session
+    # method, so selection gates and fault-to-lifecycle reconciliation stay the
+    # session's alone and the broker adds only the pipeline.
+    #
+    # The safe-tier guarantee itself lives in tests/prohibited_ops/
+    # test_tier_surface.py, which ITERATES the production registry and so covered
+    # this capability the moment it was registered. This assertion is the local,
+    # readable statement of the same fact — not the proof of record.
+    _broker, _sink, session, _fake = session_broker()
+    specs = session_routed_specs(session)
+    spec = next(spec for spec in specs if spec.name == "validate_native")
+    assert spec.tier == "safe"
+    assert spec.handler == session.validate_native

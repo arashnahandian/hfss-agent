@@ -14,10 +14,11 @@ plainly, because both things are spelled ``inspect_design``:
     ``session_routed_specs`` and must not be added there. Registering it would
     put a second, differently-shaped ``inspect_design`` in the registry and
     audit an assembly step as if it were a tool call.
-  * ``"inspect_design"`` as a REGISTERED CAPABILITY is
-    ``session_routed_specs``' fifth spec, whose handler is the bound
+  * ``"inspect_design"`` as a REGISTERED CAPABILITY is the ``inspect_design``
+    entry in ``session_routed_specs``, whose handler is the bound
     ``Session.inspect``. That is the name this module dispatches, and the only
-    ``inspect_design`` the broker knows about.
+    ``inspect_design`` the broker knows about. (Named, not numbered: that tuple
+    grows — a positional reference would quietly go stale.)
 
 So: one registered capability (the session read), one unregistered assembler
 (this module) that calls it. W-5 adds ordering, completeness, provenance and

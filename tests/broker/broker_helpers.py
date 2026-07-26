@@ -146,7 +146,7 @@ def make_broker(
 def session_broker(
     scenario: Scenario | None = None,
 ) -> tuple[Broker, RecordingSink, Session, FakeAdapter]:
-    """A broker exposing the five session-routed capabilities over a
+    """A broker exposing the six session-routed capabilities over a
     ``FakeAdapter`` driven by ``scenario`` (default canned data otherwise)."""
     fake = FakeAdapter(scenario) if scenario is not None else FakeAdapter()
     session = Session(fake)
