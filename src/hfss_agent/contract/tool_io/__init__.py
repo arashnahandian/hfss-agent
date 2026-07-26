@@ -59,6 +59,7 @@ from hfss_agent.contract.tool_io.preflight_session import (
     SessionStatus,
 )
 from hfss_agent.contract.tool_io.validation import (
+    NativeValidationBlock,
     ValidateSetupRequest,
     ValidateSetupResult,
     ValidationReport,
@@ -109,6 +110,7 @@ __all__ = [
     "InspectDesignResult",
     "InspectionResult",
     # Validation
+    "NativeValidationBlock",
     "ValidateSetupRequest",
     "ValidateSetupResult",
     "ValidationReport",

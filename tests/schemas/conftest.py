@@ -14,6 +14,8 @@ from hfss_agent.contract import (
     CONTRACT_VERSION,
     Applicability,
     InspectionProvenance,
+    NativeValidation,
+    NativeValidationProvenance,
     ProvenanceRecord,
     Variation,
 )
@@ -58,6 +60,32 @@ def inspection_provenance() -> InspectionProvenance:
         contract_version=CONTRACT_VERSION,
         wrapper_version="0.0.0",
         read_under_aedt_version="2026.1",
+    )
+
+
+@pytest.fixture
+def native_validation() -> NativeValidation:
+    """HFSS's own ValidateDesign output, as the adapter hands it back.
+
+    ``source`` is deliberately NOT passed: the literal defaults to
+    ``hfss_native`` and is the attribution itself, so no producer sets it.
+    """
+    return NativeValidation(
+        raw_output=["Design validation completed. 0 errors, 0 warnings."]
+    )
+
+
+@pytest.fixture
+def native_validation_provenance() -> NativeValidationProvenance:
+    """Provenance for ONE native validation run — no solve and no calculation
+    of ours behind it, so no field here describes either."""
+    return NativeValidationProvenance(
+        project="patch_antenna",
+        design="HFSSDesign1",
+        validated_at=datetime(2026, 7, 17, 9, 30, tzinfo=timezone.utc),
+        contract_version=CONTRACT_VERSION,
+        wrapper_version="0.0.0",
+        validated_under_aedt_version="2026.1",
     )
 
 

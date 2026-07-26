@@ -26,7 +26,17 @@ UntrustedStr = str
 # schema shape and the package release can move without forcing each other.
 # Every site imports this one constant; the pin test in the schema suite is what
 # makes an accidental edit to its value loud.
-CONTRACT_VERSION = "snapshot-1.0.0"
+#
+# ``2.0.0`` because ADR-23 resolves the increment scheme ADR-21 dec. 10 and
+# ADR-22 dec. 2 deferred: this space is PLAIN SEMVER OVER THE SCHEMA SURFACE.
+# The ADR-23 amendment removed a ``Literal`` member and added a required field
+# to a schema under ``extra="forbid"``; both are breaking for a producer or an
+# exhaustive consumer, regardless of how few of either exist today. The two
+# version spaces move INDEPENDENTLY and are never synchronised — seeing
+# ``snapshot-2.0.0`` beside package version ``0.2.0`` is correct, not drift, and
+# "fixing" either to match the other would destroy the ability to say which
+# schema surface produced a given record.
+CONTRACT_VERSION = "snapshot-2.0.0"
 
 # --- Enumerated value sets fixed verbatim by System Design §2 ----------------
 
@@ -36,8 +46,19 @@ ReadStatus = Literal["ok", "not_readable"]
 # SolveState.convergence_status (§2 solve_state: "converged/stopped status")
 ConvergenceStatus = Literal["converged", "stopped"]
 
-# Finding.source (§2 Finding — Identity)
-FindingSource = Literal["hfss_native", "gate", "engine_rule"]
+# Finding.source (§2 Finding — Identity). TWO members, where §2 still lists
+# three: ``hfss_native`` was REMOVED by the ADR-23 amendment, and §2 is being
+# edited to match. A native HFSS message is not a Finding and cannot be made
+# into one — we own no rule id, rule version, calculation, or machine-checked
+# applicability behind it, so most of Finding's required fields would have to
+# be faked to carry one. Native validation travels as its own structural block
+# (``tool_io.NativeValidationBlock``) instead. Removing the member is what
+# makes that separation true at the TYPE level rather than a label that can be
+# wrong: with it gone, a finding returned across the wrapper→engine seam cannot
+# claim native origin at all, so W-10's seven-field receipt gate stays
+# unconditional — there is no source for which it could be relaxed, and no call
+# site to miss.
+FindingSource = Literal["gate", "engine_rule"]
 
 # Finding.outcome — the five states (§2 Finding — Judgment)
 FindingOutcome = Literal[
