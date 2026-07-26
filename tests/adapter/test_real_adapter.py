@@ -18,7 +18,11 @@ from types import SimpleNamespace
 import pytest
 
 from hfss_agent.adapter.real import RealAdapter
-from hfss_agent.adapter.results import AdapterCannotEvaluate, AdapterInternalError
+from hfss_agent.adapter.results import (
+    AdapterCannotEvaluate,
+    AdapterInternalError,
+    SessionFault,
+)
 from hfss_agent.contract import Environment, SolvedData, SolveState
 from hfss_agent.contract.tool_io import SelectionChain, SelectionOption
 
@@ -332,6 +336,62 @@ def test_validate_native_passthrough() -> None:
     result = adapter.validate_native()
     assert result.source == "hfss_native"
     assert result.raw_output == ["Design validation completed. 0 errors, 0 warnings."]
+
+
+class RaisingValidateSession(FakeSession):
+    """A seam double whose ``validate_native`` raises ``error`` — the shape of a
+    ValidateDesign/GetMessages that is missing or blows up in the live seam."""
+
+    def __init__(self, error: Exception):
+        super().__init__()
+        self._error = error
+
+    def validate_native(self, project: str, design: str) -> list[str]:
+        raise self._error
+
+
+def _selected_with_raising_validate(error: Exception) -> RealAdapter:
+    adapter = RealAdapter(RaisingValidateSession(error))
+    adapter.attach(1)
+    adapter.select("project", "patch_antenna")
+    adapter.select("design", "HFSSDesign1")
+    return adapter
+
+
+def test_validate_native_unavailable_is_cannot_evaluate_not_a_fault() -> None:
+    # The realistic case: odesign does not expose ValidateDesign, so the
+    # attribute lookup raises AttributeError inside the seam. The guard must
+    # report a PyAEDT/HFSS limitation, not our own internal error.
+    adapter = _selected_with_raising_validate(
+        AttributeError("'odesign' object has no attribute 'ValidateDesign'")
+    )
+    # Returning at all is the "no exception propagated" half of the assertion:
+    # an unguarded raise would come back as AdapterInternalError instead.
+    result = adapter.validate_native()
+    assert isinstance(result, AdapterCannotEvaluate)
+    # Not a session fault: PyAEDT answered, so the session stays healthy and
+    # nothing is driven SUSPECT by an unavailable validator.
+    assert not isinstance(result, SessionFault)
+    assert result.reason == "native validation unavailable"
+    assert "validator" in result.limitation
+
+
+def test_validate_native_guard_is_narrow_not_a_catch_all() -> None:
+    """The point of the pair: the guard catches ``_UNAVAILABLE`` only.
+
+    RuntimeError is not in ``_UNAVAILABLE``, so it must NOT be relabelled a
+    PyAEDT limitation. It passes the except clause untouched, reaches the
+    watchdog's broad handler, and comes back as AdapterInternalError — a
+    SessionFault, which is the correct report for an unexpected failure of
+    unknown origin. If this ever returns a cannot_evaluate, the guard has grown
+    into the catch-all with a narrow name that it exists not to be.
+    """
+    adapter = _selected_with_raising_validate(RuntimeError("unexpected"))
+    result = adapter.validate_native()
+    assert isinstance(result, AdapterInternalError)
+    assert not isinstance(result, AdapterCannotEvaluate)
+    assert isinstance(result, SessionFault)
+    assert "RuntimeError" in result.detail
 
 
 # --- read_solve_state (approved cannot_evaluate gaps) ------------------------

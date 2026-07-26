@@ -407,7 +407,55 @@ class RealAdapter(Adapter):
         scope = self._scope()
         if isinstance(scope, AdapterOutcome):
             return scope
-        return NativeValidation(raw_output=self._session.validate_native(*scope))
+        # WHY THIS GUARD EXISTS, and exactly how far it reaches — both stated,
+        # because the narrowness is deliberate and must not be read as a claim
+        # about the rest of this file.
+        #
+        # Without it, a ValidateDesign/GetMessages that is missing or raises
+        # escapes to the watchdog's broad handler and comes back as
+        # AdapterInternalError — a SessionFault, which marks the session SUSPECT
+        # and tells the user the agent hit an internal error in its own
+        # bookkeeping. That is an honesty inversion: an unavailable HFSS
+        # validator would be reported as our fault rather than as what it is.
+        # AdapterCannotEvaluate states the real thing — PyAEDT/HFSS could not
+        # run or return the native validation — and leaves the session healthy.
+        #
+        # DELIBERATELY NARROW: this path only. Unguarded live-seam calls of the
+        # same kind remain in _attach (the desktop-level version reads),
+        # _list_options, _select, _read_solve_state, _find_setup, and all of
+        # _read_solved_data; _inspect's own application() bind is unguarded too,
+        # and only its per-section readers are guarded. Their being unguarded is
+        # NOT a statement that they are known safe — it says only that this step
+        # did not touch them. Those seven are accurate as of this change and are
+        # not maintained here: the authoritative list lives with the Phase 6.1
+        # sweep, so trust that one over this if the two ever disagree. The
+        # adapter-wide guard policy is Phase 6.1 work and is tracked as a
+        # standing blocker; widening it here would rework an earlier step from
+        # inside a branch scoped to this one.
+        #
+        # ONE ASYMMETRY THIS CREATES, named rather than left to be discovered:
+        # the two odesign calls live in real/session.py, which cannot import
+        # AdapterCannotEvaluate, so the guard has to sit here — around the whole
+        # seam call. It therefore also covers the Hfss(...) bind that
+        # LiveSession.validate_native performs internally. That SAME bind
+        # failing under _inspect still surfaces as AdapterInternalError. One
+        # underlying failure, two different outcomes, decided by which path
+        # reached it. Reconciling that is part of the Phase 6.1 sweep, not of
+        # this guard.
+        try:
+            raw_output = self._session.validate_native(*scope)
+        except _UNAVAILABLE:
+            return AdapterCannotEvaluate(
+                reason="native validation unavailable",
+                limitation=(
+                    "HFSS's own design validator could not be run, or its "
+                    "messages could not be read back, through PyAEDT for this "
+                    "design. This names a limitation of what PyAEDT could do "
+                    "here: it is not a statement about the design, and it is "
+                    "not the same as a validator that ran and reported nothing."
+                ),
+            )
+        return NativeValidation(raw_output=raw_output)
 
     def _read_solve_state(self) -> AdapterResult[SolveState]:
         scope = self._scope()
