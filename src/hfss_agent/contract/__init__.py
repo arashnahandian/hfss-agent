@@ -43,6 +43,7 @@ from hfss_agent.contract.intent_object import IntentObject
 from hfss_agent.contract.metric_record import MetricRecord
 from hfss_agent.contract.provenance_record import (
     InspectionProvenance,
+    NativeValidationProvenance,
     ProvenanceRecord,
 )
 
@@ -83,4 +84,7 @@ __all__ = [
     "Applicability",
     # Provenance for a structural read, which has no solve behind it (ADR-20)
     "InspectionProvenance",
+    # Provenance for a native validation run, which has neither a solve nor a
+    # calculation of ours behind it (ADR-23)
+    "NativeValidationProvenance",
 ]

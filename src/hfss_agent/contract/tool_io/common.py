@@ -116,17 +116,19 @@ _KNOWN_SESSION_OUTCOMES = frozenset(
 
 
 def result_kind(value: object) -> str | None:
-    """Callable discriminator for the session result unions (``SelectResult``,
-    ``ListSelectionOptionsResult``, ``InspectDesignResult``).
+    """Callable discriminator for the four result unions that route a session
+    gate's refusal (``SelectResult``, ``ListSelectionOptionsResult``,
+    ``InspectDesignResult``, ``ValidateSetupResult``).
 
     Deliberately a CALLABLE discriminator, not the declared
     ``Field(discriminator="outcome")`` that ``ExportResult`` uses. The success
-    types here — ``SessionStatus``, ``SelectionOptions``, ``InspectionResult`` —
-    are shared across roughly six unions and are the on-the-wire shape of
-    ``attach``/``select``/``get_session_status``; a declared discriminator would
-    force an ``outcome`` field onto all three, changing that wire format for
-    every consumer just to tag a refusal. So the success payloads stay UNTAGGED
-    and routing is explicit here instead.
+    types here — ``SessionStatus``, ``SelectionOptions``, ``InspectionResult``,
+    ``ValidationReport`` — are the on-the-wire shape of the tools that produce
+    them (the first is shared across roughly six unions and is what
+    ``attach``/``select``/``get_session_status`` return); a declared
+    discriminator would force an ``outcome`` field onto every one of them,
+    changing that wire format for every consumer just to tag a refusal. So the
+    success payloads stay UNTAGGED and routing is explicit here instead.
 
     The absence of an ``outcome`` key IS the success signal. An outcome that is
     present but unrecognized returns ``None``, which makes pydantic raise rather

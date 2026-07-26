@@ -10,16 +10,20 @@ Proves the load-bearing structural guarantees:
   * every new tool_io schema constructs from representative valid data;
   * the adapter-backed result unions route a CannotEvaluate payload to
     CannotEvaluate and a success payload to the success type;
-  * the three session result unions route through the CALLABLE ``result_kind``
-    discriminator — every arm, plus an unknown outcome rejected — while their
-    shared success types stay untagged (no ``outcome`` field, unchanged wire
-    format), which is the reason the discriminator is callable at all;
+  * the four unions that route a session gate's refusal go through the CALLABLE
+    ``result_kind`` discriminator — every arm, plus an unknown outcome rejected
+    — while their success types stay untagged (no ``outcome`` field, unchanged
+    wire format), which is the reason the discriminator is callable at all;
+  * ValidationReport serializes its native block BEFORE its findings, which is
+    what makes "native first" a guarantee this repo holds rather than one
+    borrowed from pydantic's field ordering;
   * importing ``contract.tool_io`` pulls in no ``pyaedt`` (purity holds — ADR-3).
 
 Reuses the shared conftest fixtures (``variation``, ``provenance``,
 ``valid_finding_kwargs``) so the §2 sub-records are built one way across suites.
 """
 
+import json
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -37,6 +41,8 @@ from hfss_agent.contract import (
     InspectionSection,
     IntentObject,
     MetricRecord,
+    NativeValidation,
+    NativeValidationProvenance,
     Project,
     ProvenanceRecord,
     SolutionExists,
@@ -70,6 +76,7 @@ from hfss_agent.contract.tool_io import (
     ListSelectionOptionsResult,
     MetricsComputed,
     MetricsRefused,
+    NativeValidationBlock,
     PreflightReport,
     SelectionChain,
     SelectionOption,
@@ -81,6 +88,7 @@ from hfss_agent.contract.tool_io import (
     SolutionValidityReport,
     SolveHealthReport,
     ValidateSetupRequest,
+    ValidateSetupResult,
     ValidationReport,
 )
 
@@ -92,6 +100,7 @@ _ATTACH = TypeAdapter(AttachResult)
 _INSPECT = TypeAdapter(InspectDesignResult)
 _SELECT = TypeAdapter(SelectResult)
 _LIST_OPTIONS = TypeAdapter(ListSelectionOptionsResult)
+_VALIDATE_SETUP = TypeAdapter(ValidateSetupResult)
 
 
 # --- shared instances --------------------------------------------------------
@@ -324,11 +333,11 @@ def test_export_rejects_unknown_outcome() -> None:
 
 
 # --- session result unions: the callable-discriminator routes ----------------
-# SelectResult / ListSelectionOptionsResult / InspectDesignResult route via the
-# CALLABLE ``result_kind`` discriminator, not a declared
-# Field(discriminator="outcome"), precisely so their success types keep their
-# untagged wire format. These tests pin both halves of that bargain: the success
-# types stay untagged, and every tagged arm still routes exactly.
+# SelectResult / ListSelectionOptionsResult / InspectDesignResult /
+# ValidateSetupResult route via the CALLABLE ``result_kind`` discriminator, not
+# a declared Field(discriminator="outcome"), precisely so their success types
+# keep their untagged wire format. These tests pin both halves of that bargain:
+# the success types stay untagged, and every tagged arm still routes exactly.
 
 _SELECTION_REFUSAL_OUTCOMES = [
     "refused_no_session",
@@ -376,21 +385,50 @@ def inspection_result(
     )
 
 
+@pytest.fixture
+def native_validation_block(
+    native_validation: NativeValidation,
+    native_validation_provenance: NativeValidationProvenance,
+) -> NativeValidationBlock:
+    return NativeValidationBlock(
+        validation=native_validation, provenance=native_validation_provenance
+    )
+
+
+@pytest.fixture
+def validation_report(
+    finding: Finding, native_validation_block: NativeValidationBlock
+) -> ValidationReport:
+    return ValidationReport(
+        native=native_validation_block,
+        findings=[finding],
+        engine_status="absent",
+        template_text="[validate]",
+    )
+
+
 def test_session_success_types_carry_no_outcome_field(
     session_status: SessionStatus,
     selection_options: SelectionOptions,
     inspection_result: InspectionResult,
+    validation_report: ValidationReport,
 ) -> None:
     """The reason the discriminator is callable at all (gap 3).
 
-    These three success types are shared across roughly six unions and are the
-    on-the-wire shape of attach/select/get_session_status. A declared
+    These success types are the on-the-wire shape of the tools that produce
+    them, and the first is shared across roughly six unions
+    (attach/select/get_session_status). A declared
     ``Field(discriminator="outcome")`` would have forced an ``outcome`` field
     onto every one of them, changing that wire format for every consumer just to
     tag a refusal. If this test ever fails, the success payloads have been
     tagged and the wire format has silently changed.
     """
-    for model in (session_status, selection_options, inspection_result):
+    for model in (
+        session_status,
+        selection_options,
+        inspection_result,
+        validation_report,
+    ):
         assert "outcome" not in type(model).model_fields
         assert "outcome" not in model.model_dump()
 
@@ -401,6 +439,10 @@ def test_session_success_types_carry_no_outcome_field(
         ("_SELECT", "session_status", SessionStatus),
         ("_LIST_OPTIONS", "selection_options", SelectionOptions),
         ("_INSPECT", "inspection_result", InspectionResult),
+        # ValidateSetupResult had ZERO routing coverage before ADR-23 — it was a
+        # bare union no test ever exercised. Routing it here is the hole being
+        # closed, not a formality.
+        ("_VALIDATE_SETUP", "validation_report", ValidationReport),
     ],
 )
 def test_session_union_routes_every_arm_and_rejects_an_unknown_outcome(
@@ -632,12 +674,19 @@ def test_validation_and_verified_result_schemas_construct(
     metric: MetricRecord,
     solve_state: SolveState,
     provenance: ProvenanceRecord,
+    validation_report: ValidationReport,
 ) -> None:
-    assert (
-        ValidationReport(
-            findings=[finding], engine_status="absent", template_text="[validate]"
-        ).engine_status
-        == "absent"
+    assert validation_report.engine_status == "absent"
+    # ADR-23's whole point, and untestable before it: native output lives in
+    # its own structural block, attributed by NativeValidation's own literal.
+    assert validation_report.native.validation.source == "hfss_native"
+    assert validation_report.native.validation.raw_output
+    # ...and `findings` is NOT where it lives. Every entry there is a real
+    # Finding from one of the two sources the wrapper owns a judgment for, so
+    # the seven-field evidence gate applies to all of them without exception.
+    assert validation_report.findings == [finding]
+    assert all(
+        entry.source in ("gate", "engine_rule") for entry in validation_report.findings
     )
     assert SolutionValidityReport(gates=[finding], template_text="[gates]").gates == [
         finding
@@ -648,6 +697,37 @@ def test_validation_and_verified_result_schemas_construct(
         ).solve_state.convergence_status
         == "converged"
     )
+
+
+def test_validation_report_serializes_native_before_findings(
+    validation_report: ValidationReport,
+) -> None:
+    """"Native first" is a guarantee this repo holds ONLY because of this test.
+
+    ``ValidationReport`` declares ``native`` ahead of ``findings`` so that spec
+    Point 2's "native always presented first" is a property of the emitted
+    artifact rather than a sort every producer must remember to apply. But that
+    only works because PYDANTIC serializes in field-declaration order — an
+    implementation property of a dependency, not a promise this project owns.
+
+    A future pydantic upgrade could reorder keys silently. The structural
+    guarantee would evaporate, the docstrings asserting it would quietly become
+    false, and every other test in this suite would stay green, because none of
+    them look at key order. This test is what converts a borrowed property into
+    one we hold: if it fails, the ordering claim is no longer true and the
+    wording that states it has to change with it.
+
+    Both serialization paths are asserted rather than one inferred from the
+    other: pydantic emits python-mode and JSON separately, so agreement between
+    them is a fact to check, not a given.
+    """
+    keys = list(validation_report.model_dump().keys())
+    assert keys[0] == "native"
+    assert keys.index("native") < keys.index("findings")
+
+    json_keys = list(json.loads(validation_report.model_dump_json()).keys())
+    assert json_keys[0] == "native"
+    assert json_keys.index("native") < json_keys.index("findings")
 
 
 def test_record_schemas_construct() -> None:

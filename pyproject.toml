@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hfss-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open capability wrapper for a verification-first MCP agent for Ansys HFSS (read-only, attach-only, zero-egress)."
 readme = "README.md"
 # Python pin held deliberately at 3.10-3.12 per ADR-13 (not PyAEDT's wider

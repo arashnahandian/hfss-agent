@@ -43,12 +43,13 @@ class InspectDesignRequest(StrictModel):
     sections: list[InspectionSectionName] | None = None
 
 
-# Routed by the CALLABLE ``result_kind`` discriminator, like the other two
-# session result unions (see result_kind's docstring): InspectionResult is a
-# shared success shape and must NOT grow an ``outcome`` field, so success stays
-# untagged. inspect's gates can refuse for any of the three remedies — no session,
-# and (via _require_project_and_design) an incomplete selection; the ordering tag
-# is carried too so all three session unions route one identical tag set.
+# Routed by the CALLABLE ``result_kind`` discriminator, like the other three
+# unions that route a session gate's refusal (see result_kind's docstring):
+# InspectionResult is a shared success shape and must NOT grow an ``outcome``
+# field, so success stays untagged. inspect's gates can refuse for any of the
+# three remedies — no session, and (via _require_project_and_design) an
+# incomplete selection; the ordering tag is carried too so all four such unions
+# route one identical tag set.
 InspectDesignResult = Annotated[
     Annotated[InspectionResult, Tag("success")]
     | Annotated[CannotEvaluate, Tag("cannot_evaluate")]

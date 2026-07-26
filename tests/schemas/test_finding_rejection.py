@@ -67,6 +67,37 @@ def test_finding_rejects_missing_required_field(
     assert missing_field in str(excinfo.value)
 
 
+def test_finding_rejects_hfss_native_source_so_no_engine_finding_can_claim_it(
+    valid_finding_kwargs: dict[str, Any],
+) -> None:
+    """A native HFSS message can never enter this schema, at the type level.
+
+    WHAT THIS PROTECTS. The engine returns ``list[Finding]`` across the
+    wrapper->engine seam, and W-10's job is to reject any entry missing one of
+    the sixteen required fields. Had ``FindingSource`` kept ``hfss_native``,
+    those fields could have been argued optional "for native findings" — and
+    then any engine finding wearing that label would walk straight through the
+    evidence gate. That is the laundering hole ADR-23 closed by REMOVING the
+    member rather than by adding a conditional the gate could forget to apply.
+
+    So this is not a spelling test. It is the proof that the hole is shut by
+    the type system: with no such member, there is no source for which the
+    seven-field requirement could be relaxed, and W-10's gate stays
+    unconditional. Native validation travels as ``NativeValidationBlock``
+    instead, whose own ``source`` literal carries the attribution.
+
+    If this test ever fails, the member is back and the gate is conditional
+    again.
+    """
+    kwargs = dict(valid_finding_kwargs)
+    kwargs["source"] = "hfss_native"
+
+    with pytest.raises(ValidationError) as excinfo:
+        Finding(**kwargs)
+
+    assert "source" in str(excinfo.value)
+
+
 def test_finding_allows_missing_optional_suggested_action(
     valid_finding_kwargs: dict[str, Any],
 ) -> None:

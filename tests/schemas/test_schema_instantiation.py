@@ -25,6 +25,7 @@ from hfss_agent.contract import (
     IntentObject,
     MetricRecord,
     NativeValidation,
+    NativeValidationProvenance,
     Project,
     ProvenanceRecord,
     Selection,
@@ -41,7 +42,7 @@ def test_contract_version_literal_is_pinned() -> None:
     # literal, so a stray edit to the constant would flow through and pass every
     # other test silently. This one pin is what makes a change to the schema
     # version space loud — bumping it here is the deliberate, reviewed act.
-    assert CONTRACT_VERSION == "snapshot-1.0.0"
+    assert CONTRACT_VERSION == "snapshot-2.0.0"
 
 
 def _snapshot(variation: Variation) -> DesignSnapshot:
@@ -167,6 +168,25 @@ def test_inspection_provenance_instantiates(
         "contract_version",
         "wrapper_version",
         "read_under_aedt_version",
+    }
+
+
+def test_native_validation_provenance_instantiates(
+    native_validation_provenance: NativeValidationProvenance,
+) -> None:
+    assert native_validation_provenance.validated_at.tzinfo is not None
+    # Exactly the six fields — mirroring the InspectionProvenance pin above and
+    # for the same reason (ADR-23, ADR-20 dec. 6). A validation run has no solve
+    # and no calculation of ours, so there must be no slot here for a later
+    # change to fill with something that never solved or never computed. The pin
+    # is what makes adding one a visible test diff rather than a quiet edit.
+    assert set(NativeValidationProvenance.model_fields) == {
+        "project",
+        "design",
+        "validated_at",
+        "contract_version",
+        "wrapper_version",
+        "validated_under_aedt_version",
     }
 
 
