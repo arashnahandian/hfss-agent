@@ -636,7 +636,7 @@ class Broker:
 
 
 def session_routed_specs(session: Session) -> tuple[CapabilitySpec, ...]:
-    """The five session-routed capabilities (approved plan §2), all safe tier.
+    """The six session-routed capabilities (approved plan §2), all safe tier.
 
     Thin delegation ONLY: each handler is the corresponding bound ``Session``
     method — selection order, prerequisites, and fault-to-lifecycle
@@ -679,6 +679,15 @@ def session_routed_specs(session: Session) -> tuple[CapabilitySpec, ...]:
             description=(
                 "Read the requested design inspection sections (all when "
                 "unspecified)."
+            ),
+        ),
+        CapabilitySpec(
+            name="validate_native",
+            tier="safe",
+            handler=session.validate_native,
+            description=(
+                "Run HFSS's own design validation and return its messages "
+                "unchanged."
             ),
         ),
     )

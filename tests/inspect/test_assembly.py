@@ -533,6 +533,7 @@ def test_w5_is_not_itself_a_registered_capability() -> None:
         "select",
         "get_session_status",
         "inspect_design",
+        "validate_native",
     }
     # The capability NAMED inspect_design is the session read, not the W-5
     # assembler. Registering the assembler would put a second, differently

@@ -204,6 +204,23 @@ def test_inspection_provenance_rejects_naive_read_at() -> None:
         )
 
 
+def test_native_validation_provenance_rejects_naive_validated_at() -> None:
+    # The sibling of the InspectionProvenance check above, and it was missing:
+    # 2.2a pinned that validated_at IS aware on a well-formed record, but never
+    # that a naive one is REJECTED. Same reasoning either way — a naive instant
+    # would silently read as local time, and "when did the validator run" must
+    # never be ambiguous by an offset.
+    with pytest.raises(ValidationError):
+        NativeValidationProvenance(
+            project="patch_antenna",
+            design="HFSSDesign1",
+            validated_at=datetime(2026, 7, 17, 9, 30),
+            contract_version=CONTRACT_VERSION,
+            wrapper_version="0.0.0",
+            validated_under_aedt_version="2026.1",
+        )
+
+
 def test_inspection_provenance_shares_no_base_with_provenance_record() -> None:
     """The two are independent types (ADR-20 chose Option B over a shared base).
 

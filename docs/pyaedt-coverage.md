@@ -72,6 +72,15 @@ fabricating. All `mock-only`:
   normalisation.
 - **`list_options("variation")`** returns `AdapterCannotEvaluate` when PyAEDT
   exposes no readable variation list.
+- **`validate_native`** (added Step 2.2b) returns `AdapterCannotEvaluate` when
+  the narrow `_UNAVAILABLE` guard on the seam call fires: HFSS's own design
+  validator could not be run, or its messages could not be read back, through
+  PyAEDT for this design. Without the guard this surfaced as
+  `AdapterInternalError` — a `SessionFault` blaming the wrapper's own
+  bookkeeping for an unavailable HFSS validator. The guard covers this path
+  only; the adapter-wide guard policy is Phase 6.1 work. Note the outcome is
+  **not** a statement about the design, and is not the same as a validator that
+  ran and reported nothing (an empty `raw_output`, which is a success).
 
 ### Re-attach handle hygiene (Step 1.3 — `mock-only`)
 
@@ -96,3 +105,39 @@ Read-only / attach-only enforcement lives in
 mutating/`release_desktop`/`close_desktop` names) and
 `tests/boundary/test_adapter_import_audit.py` (only `session.py` may import the
 AEDT API, under both `pyaedt` and `ansys.aedt` name shapes).
+
+### Native validation side effects (Step 2.2b — `mock-only`)
+
+Introduced with the native validation passthrough (W-6). The `_UNAVAILABLE`
+guard and the message passthrough are CI-verified via the seam double and the
+`FakeAdapter`'s six native fixtures, but three assumptions are unverified — two
+about what `ValidateDesign` and `GetMessages` actually DO on a live session, one
+about what their output contains. The first two were flagged during the Step
+2.2b safety check as unsure rather than rounded up to "safe"; the third is the
+Phase 5.2 question ADR-23 #15 assigns to this document. All three are recorded
+here rather than left as confidence:
+
+- **Does `ValidateDesign` write anything to disk, on any AEDT version?** It was
+  chosen over `validate_full_design()` specifically because the latter writes a
+  validation log to the project directory, which this package's read-only stance
+  forbids. That choice rests on documented behaviour and has never been
+  confirmed against a licensed session. Verify that a native validation run
+  leaves the project directory byte-identical. If `ValidateDesign` writes
+  anything at all, the read-only claim for this path is wrong and the operation
+  needs re-scoping — not a footnote.
+- **Does `GetMessages` mutate the message queue it reads?** It demonstrably
+  populates the AEDT message manager, which is solver-session state, so this
+  operation is not provably side-effect-free in the way the other six reads are.
+  The full scope of that effect is unverified: whether messages are consumed,
+  cleared, re-ordered, or merely observed. Verify what the queue holds before and
+  after a run, and whether a second consecutive validation returns the same
+  messages.
+- **Does real ValidateDesign output contain control characters, and does any
+  single message approach `MAX_UNTRUSTED_STR_LEN`?** (ADR-23 #15.) The sanitizer
+  strips control characters other than tab and newline, leaving no trace, and
+  caps each message at 10 000 with a visible truncation marker. That cap is
+  documented in-code as an unvalidated judgment call — it has never met live
+  AEDT output, because `validate_native` is `mock-only`. A live pass should
+  record whether any real message contains control characters (and which), and
+  the longest single message observed, so the cap can be confirmed or moved on
+  evidence rather than judgment.

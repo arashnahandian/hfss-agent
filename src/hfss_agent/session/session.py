@@ -28,9 +28,10 @@ absorbed:
     reached (contract gap 3). TWO uses of ``CannotEvaluate`` remain here that are
     not adapter-reported, and they are deliberate:
 
-      - ``_session_fault_refusal`` — a read (list_selection_options / inspect)
-        that FAULTED mid-flight. Neither tool has a ``SessionStatus`` arm to
-        report the resulting transition through, so the fault is surfaced here.
+      - ``_session_fault_refusal`` — a read (list_selection_options / inspect /
+        validate_native) that FAULTED mid-flight. None of those tools has a
+        ``SessionStatus`` arm to report the resulting transition through, so the
+        fault is surfaced here.
       - ``_internal_error_refusal`` — a post-verify ``AdapterInternalError``,
         escalated rather than allowed to loop through verify forever.
 
@@ -67,7 +68,7 @@ from hfss_agent.adapter import (
     AdapterTimeout,
     SessionFault,
 )
-from hfss_agent.contract import Environment, InspectionSection
+from hfss_agent.contract import Environment, InspectionSection, NativeValidation
 from hfss_agent.contract.tool_io import (
     AttachResult,
     CannotEvaluate,
@@ -256,6 +257,26 @@ class Session:
         ``cannot_evaluate``) returns ``CannotEvaluate``."""
         return self._do_inspect(sections)
 
+    @reconnect_guarded
+    def validate_native(self) -> NativeValidation | SelectionRefused | CannotEvaluate:
+        """Run HFSS's own ValidateDesign and return its messages. Success returns
+        the RAW ``NativeValidation`` — deliberately not a
+        ``NativeValidationBlock``: this layer holds no provenance and cannot
+        reach the attach-time AEDT version that block's provenance requires,
+        which the W-6 validate_native module assembles downstream (not built
+        here). Exactly the split ``inspect`` makes for W-5.
+
+        The two failure arms sit on the same refusal-vs-failure line as
+        ``inspect``: a session gate that declined before PyAEDT was reached (no
+        usable session, a selection gap) returns ``SelectionRefused``; an
+        operation that WAS attempted and did not complete (an adapter fault, or a
+        genuine adapter ``cannot_evaluate``) returns ``CannotEvaluate``. That
+        second arm is what keeps "the validator could not be run" distinguishable
+        from "the validator ran and reported nothing" — the latter is a SUCCESS
+        carrying an empty ``raw_output``, and conflating the two is the misread
+        ADR-23 most guards against."""
+        return self._do_validate_native()
+
     def get_session_status(self) -> SessionStatus:
         """Report current health, selection chain, and suspect flag. A pure read of
         internal state — makes no adapter call and does NOT trigger verify, so a
@@ -348,7 +369,7 @@ class Session:
         # fake adapter does not scope-check at all, so it would instead wrongly
         # return canned sections.) This is a selection-gap sibling of
         # _require_usable_session, not a stage prerequisite.
-        gap = self._require_project_and_design()
+        gap = self._require_project_and_design("the design can be inspected")
         if gap is not None:
             return gap
         outcome = self._adapter.inspect(sections)
@@ -365,6 +386,44 @@ class Session:
         # Success: the adapter returns the raw section dict, already
         # watchdog-guarded and sanitized. No wrapper, no template_text, no
         # provenance here — assembling InspectionResult is the W-5 module's job.
+        return outcome
+
+    def _do_validate_native(
+        self,
+    ) -> NativeValidation | SelectionRefused | CannotEvaluate:
+        refusal = self._require_usable_session()
+        if refusal is not None:
+            return refusal
+        # The same selection-gap sibling _do_inspect uses, answered from OUR
+        # chain for the same reason. ValidateDesign is design-level — the adapter
+        # does not require a setup/sweep/variation selected to run it, and
+        # NativeValidationProvenance carries no field for one — so project+design
+        # is the WHOLE prerequisite and there is deliberately no stage check
+        # here. The contract agrees: ValidateSetupResult carries the
+        # selection-order tag but validate_setup can only ever emit the other
+        # two remedies.
+        gap = self._require_project_and_design(
+            "HFSS's own validation can be run on the design"
+        )
+        if gap is not None:
+            return gap
+        outcome = self._adapter.validate_native()
+        if isinstance(outcome, SessionFault):
+            surfaced = self._classify_fault(outcome, context="operation")
+            if surfaced is not None:
+                return surfaced  # escalated post-verify internal error
+            # validate_native has no SessionStatus arm either, so a fault is
+            # reported as a CannotEvaluate naming the new state (ADR-16
+            # deviation), exactly like list_selection_options and inspect.
+            return self._session_fault_refusal("native validation")
+        if isinstance(outcome, AdapterCannotEvaluate):
+            # PyAEDT WAS reached and could not run the validator. Never conflate
+            # this with a NativeValidation whose raw_output is empty: that is a
+            # completed run with nothing to report, which is a success (ADR-23).
+            return self._map_adapter_cannot_evaluate(outcome)
+        # Success: the adapter returns the raw NativeValidation, already
+        # watchdog-guarded and sanitized. No block, no provenance, no
+        # template_text here — pairing it with provenance is W-6's job.
         return outcome
 
     # --- reconnect-and-verify (no re-attach) ----------------------------------
@@ -544,7 +603,8 @@ class Session:
             of verify — a resync fault must not leave us ATTACHED with the two
             chains disagreeing.
 
-          * ``"operation"`` — used by ``_do_select`` / ``_do_list_options``. A fault
+          * ``"operation"`` — used by every operation body (``_do_select`` /
+            ``_do_list_options`` / ``_do_inspect`` / ``_do_validate_native``). A fault
             during a normal op is recoverable: timeout/internal-error -> SUSPECT (the
             next op re-verifies), disconnect/crash -> LOST. ESCALATION (plan change
             3): a post-verify ``AdapterInternalError`` is surfaced and does NOT go
@@ -684,26 +744,34 @@ class Session:
             )
         return self._refused("refused_no_session", "no usable session", limitation)
 
-    def _require_project_and_design(self) -> SelectionRefused | None:
+    def _require_project_and_design(
+        self, blocked_operation: str
+    ) -> SelectionRefused | None:
         """None if a project AND design are both selected; otherwise an honest
         selection-gap refusal. Answered from the session's own chain (the single
         source of truth), never by asking the adapter.
+
+        ``blocked_operation`` is a wrapper-owned clause (never untrusted input)
+        naming what cannot proceed, phrased to follow "before" — e.g. "the design
+        can be inspected". It carries NO default deliberately: a second caller
+        inheriting the first one's wording would describe the wrong operation in
+        the one message type whose whole purpose is naming the right remedy.
 
         The message names the missing selection plainly and mentions neither
         PyAEDT nor "cannot evaluate": a selection gap is the user's to close by
         selecting, not a PyAEDT limitation, and saying otherwise would be exactly
         the dishonest error this product exists to prevent. This is a
         selection-gap sibling of ``_require_usable_session`` — NOT a stage
-        prerequisite (``_prerequisite_met`` is stage-keyed and inspect is not a
-        selection stage, so it does not fit)."""
+        prerequisite (``_prerequisite_met`` is stage-keyed, and no caller of this
+        gate is itself a selection stage, so it does not fit)."""
         chain = self._state.chain
         if chain.project is not None and chain.design is not None:
             return None
         return self._refused(
             "refused_incomplete_selection",
             "incomplete selection",
-            "a project and a design must both be selected before the design can "
-            "be inspected; select a project, then a design, then retry.",
+            "a project and a design must both be selected before "
+            f"{blocked_operation}; select a project, then a design, then retry.",
         )
 
     def _prerequisite_met(self, stage: SelectionStage) -> bool:
@@ -729,9 +797,10 @@ class Session:
         return self._refused("refused_selection_order", "selection order", limitation)
 
     def _session_fault_refusal(self, operation: str) -> CannotEvaluate:
-        """Report (for a read with no SessionStatus arm — list_selection_options
-        and inspect) that a read faulted and the session transitioned. The
-        transition already ran in ``_classify_fault(context="operation")``.
+        """Report (for a read with no SessionStatus arm — list_selection_options,
+        inspect, and validate_native) that a read faulted and the session
+        transitioned. The transition already ran in
+        ``_classify_fault(context="operation")``.
 
         ``operation`` is a wrapper-owned label (never untrusted input) naming
         which read faulted, so each caller gets an accurate message instead of a
