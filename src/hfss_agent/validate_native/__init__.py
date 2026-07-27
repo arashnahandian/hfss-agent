@@ -17,4 +17,21 @@ than a sort a producer must remember to apply.
 What passes through is HFSS's output AS SANITIZED at the capability boundary
 (ADR-9) — see ``NativeValidationBlock`` for exactly what that does and does not
 guarantee.
+
+The assembly itself lives in ``assembler``; see that module's docstring for the
+three-name split (entry point / capability / tool), the dispatch order, the
+provenance sources, the residual honesty gap, and why ``template_text`` is a
+function here rather than a field on W-6's output.
 """
+
+from hfss_agent.validate_native.assembler import (
+    NativeValidationAssemblyError,
+    native_template_text,
+    validate_native,
+)
+
+__all__ = [
+    "validate_native",
+    "native_template_text",
+    "NativeValidationAssemblyError",
+]
