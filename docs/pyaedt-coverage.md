@@ -141,3 +141,39 @@ here rather than left as confidence:
   record whether any real message contains control characters (and which), and
   the longest single message observed, so the cap can be confirmed or moved on
   evidence rather than judgment.
+
+### S-parameter expression key spelling (Step 2.3 — `mock-only`)
+
+Introduced with the export content generators (W-7). `SolvedData.s_parameters`
+is keyed by S-parameter name, and its docstring gives `"S(1,1)"` as the
+canonical form — but nothing enforces that. `RealAdapter.read_solved_data`
+builds the mapping straight from `data.expressions` and normalises no key, so
+**canonical spelling is an assumption about what PyAEDT emits, not a guarantee
+this package makes.** It has never met a live AEDT session.
+
+`metrics/export.py` infers the port count by parsing those keys, so the
+assumption became load-bearing there: an unparsed key means no port count, and
+no port count means no Touchstone file. The parser (`_S_PARAM_KEY`) is therefore
+**strict** — `^S\((\d+),(\d+)\)$`, no case-insensitivity, no whitespace
+tolerance — and refuses anything else by name. A tolerant parser was written
+first and deliberately tightened: it would have absorbed a spelling difference
+silently, produced a correct-looking file, and destroyed the evidence that the
+assumption was wrong.
+
+A live pass should record:
+
+- **The exact spelling `data.expressions` returns** for a multi-port solved
+  setup — whether it is `S(1,1)`, `S(1, 1)`, `s(1,1)`, or something else
+  entirely, and whether it varies by solution type or AEDT version.
+- **Whether non-S-parameter expressions appear in the same mapping** (for
+  example `dB(S(1,1))`, which is a real HFSS expression shape and is currently
+  refused). If they do, the fix is to filter the mapping upstream, not to loosen
+  the parser — an export must state a complete N×N matrix, and a mapping that
+  mixes derived expressions with matrix entries cannot be trusted to be one.
+- **Whether port indices are ever zero-padded** (`S(01,1)`). Currently accepted
+  by the regex and then refused as a duplicate position if the unpadded key is
+  also present.
+
+If the real spelling differs, the refusal is expected to fire loudly at Phase
+5.2 — that is the intended outcome, not a regression. Fix it at the source that
+produces the key, and record the confirmed spelling here.
