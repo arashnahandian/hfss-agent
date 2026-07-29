@@ -24,7 +24,12 @@ from export_helpers import (
     solved,
 )
 
-from hfss_agent.metrics import ExportContentError, csv_content, touchstone_content
+from hfss_agent.metrics import (
+    ExportContentError,
+    csv_content,
+    touchstone_content,
+    touchstone_port_count,
+)
 
 # --- Touchstone: the header and option line -----------------------------------
 
@@ -365,6 +370,37 @@ def test_csv_refuses_the_same_incomplete_matrix_touchstone_does() -> None:
     data = solved([1 * GHZ], {"S(1,1)": [0j], "S(2,2)": [0j]})
     with pytest.raises(ExportContentError, match="incomplete for 2 ports"):
         csv_content(data, provenance_for())
+
+
+# --- the .sNp suffix seam -----------------------------------------------------
+
+
+@pytest.mark.parametrize("port_count", [1, 2, 3, 4, 10])
+def test_touchstone_port_count_matches_the_exported_content(port_count: int) -> None:
+    """The count a ``.sNp`` filename must encode, derived from the same inference.
+
+    Asserted AGAINST THE CONTENT rather than against the fixture's parameter: the
+    point of the function is that the filename and the bytes cannot disagree, so
+    the test checks that the number it reports is the number the header states.
+    A second inference path would pass a fixture-parameter check and still drift.
+
+    N = 10 is included because it is where a flattened filename convention breaks
+    down, and N = 2 because that is the port count whose column-major ordering
+    makes a wrong suffix actively dangerous rather than merely wrong.
+    """
+    data = positional_matrix(port_count, [1 * GHZ])
+    assert touchstone_port_count(data) == port_count
+    assert touchstone_content(data, provenance_for()).startswith(
+        f"! Touchstone 1.0 ({touchstone_port_count(data)}-port)"
+    )
+
+
+def test_touchstone_port_count_refuses_what_the_content_refuses() -> None:
+    # The count cannot be honestly reported for a matrix that could not be
+    # honestly exported, so it raises for the same reasons and via the same code.
+    data = solved([1 * GHZ], {"S(1,1)": [0j], "S(2,2)": [0j]})
+    with pytest.raises(ExportContentError, match="incomplete for 2 ports"):
+        touchstone_port_count(data)
 
 
 # --- the no-file-I/O claim ----------------------------------------------------

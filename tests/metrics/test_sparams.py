@@ -330,6 +330,55 @@ def test_non_increasing_frequencies_raise(frequencies: list[float]) -> None:
         resonant_frequency(data.frequencies, data.s11)
 
 
+@pytest.mark.parametrize("poison", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_sample_raises_and_names_its_index(poison: float) -> None:
+    """A non-finite INPUT is refused; a non-finite COMPUTED value is returned.
+
+    Same symptom, opposite causes, so deliberately opposite handling — see
+    ``_require_samples``. A sample that arrives as NaN is upstream data
+    corruption and every metric derived from it would be meaningless, whereas
+    ``s11_min`` returning ``-inf`` for a perfect match is a real limiting value.
+    Collapsing the two in either direction loses something: reject both and a
+    perfect match becomes an error; return both and corrupt data silently becomes
+    seven "infinite" metrics.
+    """
+    corrupt = series([1 * GHZ, 2 * GHZ, 3 * GHZ], [0.1, complex(poison, 0.0), 0.1])
+    with pytest.raises(ValueError, match="index 1 is not a finite complex number"):
+        s11_min(corrupt.s11)
+    with pytest.raises(ValueError, match="index 1 is not a finite complex number"):
+        resonant_frequency(corrupt.frequencies, corrupt.s11)
+
+
+def test_a_non_finite_imaginary_part_is_caught_too() -> None:
+    # The check reads both parts; a corrupt reactance is as fatal as a corrupt
+    # resistance and neither is more likely than the other.
+    corrupt = series([1 * GHZ, 2 * GHZ], [0.1, complex(0.0, math.nan)])
+    with pytest.raises(ValueError, match="index 1 is not a finite complex number"):
+        minus_10db_bandwidth(corrupt.frequencies, corrupt.s11)
+
+
+@pytest.mark.parametrize("poison", [math.nan, math.inf])
+def test_a_non_finite_frequency_raises_and_names_its_index(poison: float) -> None:
+    """The NaN frequency the monotonicity check cannot see.
+
+    Every comparison against NaN is False, so ``NaN <= previous`` never fires and
+    a NaN frequency would pass the strictly-increasing loop untouched; an
+    infinite frequency passes it too, since inf exceeds whatever preceded it.
+    That is why finiteness is checked FIRST and separately.
+    """
+    corrupt = series([1 * GHZ, poison, 3 * GHZ], [0.1, 0.01, 0.1])
+    with pytest.raises(ValueError, match="index 1 is not a finite number"):
+        resonant_frequency(corrupt.frequencies, corrupt.s11)
+
+
+def test_the_monotonicity_check_alone_would_not_have_caught_a_nan() -> None:
+    # Asserting the reason the two checks are separate, so a later edit cannot
+    # merge them on the assumption that one implies the other.
+    assert not (math.nan <= 1.0)
+    assert not (1.0 <= math.nan)
+    assert math.inf > 1e9
+
+
 # --- honest edges -------------------------------------------------------------
 
 

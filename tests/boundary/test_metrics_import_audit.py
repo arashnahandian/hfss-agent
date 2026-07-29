@@ -32,12 +32,28 @@ validate_native audits, and the asymmetry is deliberate: §5's Layer-4 line for
 metrics is the only one carrying a parenthetical — "metrics (W-7) -> broker,
 contract   (formulas themselves: pure)". W-5 and W-6 have no comparable inner
 constraint to protect, because every part of them is assembly. W-7 is two things
-at once: open formulas that must stay computable from nothing but numbers, and
-(from Part 2 of this step onward) the broker-facing wiring that fetches those
-numbers from a live session. The module-wide audit below permits ``broker``,
-because the wiring legitimately needs it. That permission is exactly what would
-let a later edit quietly reach the broker from inside a formula, and the
-module-wide test could never object. This one can.
+at once: open formulas that must stay computable from nothing but numbers, and an
+assembler that turns their output into ``MetricRecord``s. The module-wide audit
+below permits ``broker`` because §5 permits ``metrics -> broker``. That
+permission is exactly what would let a later edit quietly reach the broker from
+inside a formula, and the module-wide test could never object. This one can.
+
+NOTHING UNDER ``metrics/`` ACTUALLY IMPORTS THE BROKER TODAY, and an earlier
+version of this docstring predicted otherwise ("from Part 2 of this step onward,
+the broker-facing wiring that fetches those numbers from a live session").
+Part 3 resolved it the other way: ``assembler.compute_metrics`` takes solved
+data, provenance and gate results as DATA, and the broker dispatch that reads
+solved data belongs to the Step 3.4 ``compute_metrics`` tool in the server layer.
+The reason is correctness, not scope -- W-7 may not import ``gating``, so gate
+outcomes must arrive as data, and a W-7 that fetched its own numbers while
+receiving gates as data could not prove the two describe the same solve, which is
+exactly what ``MetricRecord.gate_status_at_computation`` asserts.
+
+The permission below STAYS anyway, because §5 is the authority on the layer map
+and it grants ``metrics -> broker``; narrowing it here would put this test in
+conflict with the design doc, which is an ADR-sized decision and not a test-file
+edit. So the allowance is currently unexercised, and this paragraph is here so
+that a reader who notices does not have to guess whether that is drift.
 
 ``hfss_agent.gating`` is forbidden here, and the consequence is worth stating
 because it looks like a contradiction: §1.1 says W-7 refuses to run before the
@@ -92,6 +108,13 @@ _FORBIDDEN_ROOTS = (
 #                two: this module owns the CONTENT, the broker owns the WRITE.
 #                Keeping the broker out by audit is what makes that split a
 #                property of the code rather than a note in a docstring.
+#
+# DELIBERATELY ABSENT: assembler.py. It is the assembly layer, not a formula, and
+# it imports ``hfss_agent.metrics.sparams`` to call the six formulas — a
+# same-package import that the contract-only check below would (correctly) reject.
+# It is still covered by the two module-wide audits above, which is the right
+# level for it: those permit ``metrics`` and ``broker`` and forbid everything
+# else, including ``gating``.
 _PURE_FORMULA_FILES = ("sparams.py", "export.py")
 
 # Modules that would give a file a way to reach the disk on its own. None is an
@@ -297,7 +320,12 @@ def test_the_pure_formula_check_would_catch_a_broker_import() -> None:
     assert _imported_modules(broker_import) == ["hfss_agent.broker"]
     assert any(
         _under("hfss_agent.broker", root) for root in _ALLOWED_HFSS_ROOTS
-    ), "the module-wide audit must keep allowing the broker; Part 2 wiring needs it"
+    ), (
+        "the module-wide audit must keep allowing the broker: §5's layer map "
+        "grants metrics -> broker, and narrowing that here would put this test "
+        "in conflict with the design doc. No metrics file exercises it today "
+        "(see the module docstring)"
+    )
     assert not _under("hfss_agent.broker", "hfss_agent.contract"), (
         "the pure-formula check must reject the broker import the module-wide "
         "audit allows"

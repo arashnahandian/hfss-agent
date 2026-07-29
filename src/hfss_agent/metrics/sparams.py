@@ -18,9 +18,15 @@ itself never appears here; it travels alongside the value on
 ``ProvenanceRecord.variation`` when W-7's later wiring builds the MetricRecord.
 
 CONTRACT-ONLY IMPORTS. This file imports ``hfss_agent.contract`` and the standard
-library, nothing else — the formulas themselves are pure (§5, Layer 4 note). The
-broker-facing wiring that fetches ``SolvedData`` from a live session is a
-separate part of this step and does not belong in this file.
+library, nothing else — the formulas themselves are pure (§5, Layer 4 note). NO
+MODULE UNDER ``metrics/`` FETCHES ``SolvedData`` FROM A LIVE SESSION, including
+the assembler beside this file: it takes the series as data from its caller. The
+broker dispatch that reads solved data belongs to the ``compute_metrics`` TOOL at
+Step 3.4, which sits in the server layer. (An earlier draft of this paragraph
+predicted that wiring would land in this step; it did not, for the reason
+``assembler.compute_metrics`` documents — a W-7 that fetched its own numbers
+while receiving gate results as data could not prove the two describe the same
+solve.)
 
 WHAT THIS MODULE DOES NOT DO: decide whether the data is trustworthy enough to
 compute on. That is W-9's job, and W-7 refuses to run before the gates pass
@@ -52,6 +58,17 @@ WHEN NO VALUE EXISTS AT ALL. The three places it bites:
     COMPLEX value does not converge -- which phase infinity carries depends on
     the direction of approach -- so there is no complex number, extended or
     otherwise, to return.
+
+A NON-FINITE INPUT IS THE OPPOSITE CASE AND IS REJECTED, NOT RETURNED. All three
+bullets above are formulas diverging over SOUND data. A sample or frequency that
+arrives already non-finite is not that: it is upstream data corruption, and every
+metric derived from it would be meaningless rather than infinite. ``ComplexSample``
+accepts NaN and ±inf (pydantic's ``allow_inf_nan`` defaults to True), so nothing
+upstream rejects them and the precondition checks below are the first layer that
+can. They raise ``ValueError`` naming the offending index, joining the
+misaligned-array and non-increasing-frequency checks in the class of failures a
+caller must fix rather than report. See ``_require_samples`` for the full
+same-symptom-opposite-cause argument.
 
 SERIALIZABILITY IS NOT PART OF THAT RULE, deliberately. Strict JSON carries
 neither ``inf`` nor ``-inf``, so "will this serialize" cannot distinguish the
@@ -159,7 +176,7 @@ def s11_min(s11: Sequence[ComplexSample]) -> float:
     cases. ``vswr_at_target`` at |G| = 1 is the same case mirrored.
 
     Raises:
-        ValueError: if ``s11`` is empty.
+        ValueError: if ``s11`` is empty, or any sample is non-finite.
     """
     _require_samples(s11)
     return min(_magnitude_db(_as_complex(sample)) for sample in s11)
@@ -180,8 +197,9 @@ def resonant_frequency(
     Arbitrary but fixed and stated, so the answer is reproducible.
 
     Raises:
-        ValueError: if the series are empty, of unequal length, or the
-            frequencies are not strictly increasing.
+        ValueError: if the series are empty, of unequal length, carry a
+            non-finite sample or frequency, or the frequencies are not strictly
+            increasing.
     """
     _require_series(frequencies, s11)
     return float(frequencies[_resonance_index(s11)])
@@ -205,9 +223,9 @@ def s11_at_target(
     out-of-range target is a ``ValueError`` here rather than a graceful outcome.
 
     Raises:
-        ValueError: if the series are empty, of unequal length, the frequencies
-            are not strictly increasing, or the target is outside the swept
-            range.
+        ValueError: if the series are empty, of unequal length, carry a
+            non-finite sample or frequency, the frequencies are not strictly
+            increasing, or the target is outside the swept range.
     """
     return _magnitude_db(_interpolated_gamma(frequencies, s11, target_frequency_hz))
 
@@ -237,8 +255,9 @@ def minus_10db_bandwidth(
         Never a zero-width stand-in for "no band" and never an exception for it.
 
     Raises:
-        ValueError: if the series are empty, of unequal length, or the
-            frequencies are not strictly increasing.
+        ValueError: if the series are empty, of unequal length, carry a
+            non-finite sample or frequency, or the frequencies are not strictly
+            increasing.
     """
     _require_series(frequencies, s11)
     decibels = [_magnitude_db(_as_complex(sample)) for sample in s11]
@@ -378,9 +397,41 @@ def _magnitude_db(gamma: complex) -> float:
 
 
 def _require_samples(s11: Sequence[ComplexSample]) -> None:
-    """Reject an empty S11 series; there is no minimum of nothing."""
+    """Reject an empty S11 series, and any sample that is not a finite number.
+
+    There is no minimum of nothing, and no meaningful metric over a NaN.
+
+    A NON-FINITE INPUT PROPAGATES AS ``ValueError``; A NON-FINITE COMPUTED VALUE
+    DOES NOT. Same symptom, opposite causes, so deliberately opposite handling:
+
+      * a non-finite INPUT sample is upstream data corruption -- the solver, the
+        adapter, or a de-embedding step produced something that is not a
+        measurement. Every metric derived from it would be meaningless, so this
+        is worth surfacing loudly at the point of entry, with the index named.
+      * a non-finite COMPUTED value (``s11_min`` at |G| = 0, ``vswr_at_target``
+        at |G| = 1) is a real mathematical limit of a real formula over sound
+        data. The module's rule for extreme inputs says that IS the answer, so
+        it is returned, and the assembler reports it as a stated omission rather
+        than a failure.
+
+    Collapsing the two would lose the distinction in whichever direction it was
+    collapsed: reject both and a perfect match becomes an error; return both and
+    corrupt data silently becomes seven "infinite" metrics.
+
+    ``ComplexSample`` accepts NaN and ±inf on ``real``/``imag`` (pydantic's
+    ``allow_inf_nan`` defaults to True), so nothing upstream of here rejects
+    them and this is the first layer that can.
+    """
     if len(s11) == 0:
         raise ValueError("S11 series is empty; no metric can be computed from it")
+    for index, sample in enumerate(s11):
+        if not (math.isfinite(sample.real) and math.isfinite(sample.imag)):
+            raise ValueError(
+                f"S11 sample at index {index} is not a finite complex number "
+                f"(real={sample.real!r}, imag={sample.imag!r}); a non-finite "
+                "INPUT sample is upstream data corruption, not a metric with an "
+                "infinite value, so it is refused rather than computed on"
+            )
 
 
 def _require_series(frequencies: Sequence[float], s11: Sequence[ComplexSample]) -> None:
@@ -397,6 +448,21 @@ def _require_series(frequencies: Sequence[float], s11: Sequence[ComplexSample]) 
             f"frequency array ({len(frequencies)}) and S11 array ({len(s11)}) "
             "must be aligned index-for-index"
         )
+    # FINITENESS BEFORE MONOTONICITY, AND THE ORDER IS LOAD-BEARING. Every
+    # comparison against a NaN is False, so `frequencies[i] <= frequencies[i-1]`
+    # does not fire for a NaN and the loop below would wave it straight through;
+    # an infinite frequency passes that loop too, since inf exceeds whatever
+    # preceded it. Checking finiteness first is what makes the monotonicity check
+    # meaningful rather than merely true. It also underwrites the assembler's
+    # guarantee that `resonant_frequency` -- a verbatim copy of one of these
+    # numbers -- can never itself be non-finite.
+    for index, frequency in enumerate(frequencies):
+        if not math.isfinite(frequency):
+            raise ValueError(
+                f"frequency at index {index} is not a finite number "
+                f"({frequency!r}); a non-finite INPUT frequency is upstream data "
+                "corruption, so it is refused rather than computed on"
+            )
     for index in range(1, len(frequencies)):
         if frequencies[index] <= frequencies[index - 1]:
             raise ValueError(

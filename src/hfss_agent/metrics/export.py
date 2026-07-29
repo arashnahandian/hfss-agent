@@ -149,6 +149,44 @@ def touchstone_content(
     return "".join(f"{line}\n" for line in lines)
 
 
+def touchstone_port_count(solved_data: SolvedData) -> int:
+    """The port count a Touchstone filename must encode, e.g. 2 for ``.s2p``.
+
+    PURE DELEGATION TO ``_port_grid``, WHICH IS THE POINT. Touchstone's extension
+    carries the port count, only this module can derive it from the S-parameter
+    key names, and the broker owns the write -- so something has to cross that
+    gap. This function is that something, and it is deliberately three lines over
+    the SAME inference the content generators use rather than a second one.
+
+    Why single-sourcing matters more here than the line count suggests:
+    ``_matrix_rows`` writes COLUMN-major order for 2-port and ROW-major for every
+    other count (see the comment there). A filename that disagrees with the data
+    is therefore not cosmetic -- a 4-port file named ``.s2p`` is read with the
+    wrong convention and S21/S12 trade places silently, with nothing in the file
+    to reveal it. A second inference path could drift from the first and produce
+    exactly that.
+
+    THE MISMATCH POLICY IS NOT DECIDED HERE, AND MUST NOT BE. What to do when the
+    caller's requested path disagrees with this number -- refuse, warn, or write
+    it anyway -- is the ``export_results`` tool's decision at Step 3.4, which owns
+    the request, the path, and the ``ExportRefused`` arms that could carry a
+    refusal. This function reports a fact and takes no position on it.
+
+    CALLED BY NOTHING BUT ITS OWN TEST UNTIL STEP 3.4. That is a deliberate
+    trade, not an oversight, and it follows the precedent W-6 set with
+    ``native_template_text``: the derivation belongs beside the code whose
+    ordering convention makes it consequential, and the alternative is that Step
+    3.4 either re-implements it or makes ``_port_grid`` public then.
+
+    Raises:
+        ExportContentError: for exactly the reasons ``touchstone_content`` does --
+            the count cannot be honestly reported for a matrix that could not be
+            honestly exported.
+    """
+    port_count, _ = _port_grid(solved_data)
+    return port_count
+
+
 def csv_content(solved_data: SolvedData, provenance: ProvenanceRecord) -> str:
     """A complete CSV export, as a string: one header row, one row per frequency.
 

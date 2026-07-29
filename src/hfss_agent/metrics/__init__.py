@@ -15,12 +15,40 @@ write goes through the broker. Unlike the metric formulas, export is general
 N-port (Locked Idea Spec Point 5), and the export functions carry no reference
 string: they emit no computed value, so there is nothing for a ``MetricRecord``
 or a ``Finding`` to point at.
+
+``assembler`` is the entry point: it checks the W-9 gate results its caller hands
+it, maps the six formulas onto the seven ``MetricRecord``s they produce, and
+states every metric it could not report. It takes NO broker -- see its module
+docstring for why that is a correctness decision about
+``gate_status_at_computation`` rather than a scope one.
 """
 
+from hfss_agent.metrics.assembler import (
+    ALL_GATES_PASSED,
+    AT_TARGET_METRICS,
+    DB,
+    GATE_OUTCOME_THAT_PERMITS_COMPUTATION,
+    HZ,
+    IMPEDANCE_AT_TARGET_REACTANCE,
+    IMPEDANCE_AT_TARGET_RESISTANCE,
+    METRIC_ORDER,
+    MINUS_10DB_BANDWIDTH,
+    NO_INTENT_REASON,
+    OHM,
+    RATIO,
+    RESONANT_FREQUENCY,
+    S11_AT_TARGET,
+    S11_KEY,
+    S11_MIN,
+    VSWR_AT_TARGET,
+    MetricsAssemblyError,
+    compute_metrics,
+)
 from hfss_agent.metrics.export import (
     ExportContentError,
     csv_content,
     touchstone_content,
+    touchstone_port_count,
 )
 from hfss_agent.metrics.sparams import (
     FORMULA_REFS,
@@ -67,4 +95,30 @@ __all__ = [
     "touchstone_content",
     "csv_content",
     "ExportContentError",
+    # The port count a .sNp filename must encode; policy on a mismatch is the
+    # export_results tool's, at Step 3.4
+    "touchstone_port_count",
+    # The entry point, and the failure that discards a result rather than
+    # reporting one it cannot vouch for
+    "compute_metrics",
+    "MetricsAssemblyError",
+    # The seven record names, their canonical order, and the units they carry
+    "METRIC_ORDER",
+    "S11_MIN",
+    "RESONANT_FREQUENCY",
+    "MINUS_10DB_BANDWIDTH",
+    "S11_AT_TARGET",
+    "VSWR_AT_TARGET",
+    "IMPEDANCE_AT_TARGET_RESISTANCE",
+    "IMPEDANCE_AT_TARGET_REACTANCE",
+    "AT_TARGET_METRICS",
+    "DB",
+    "HZ",
+    "RATIO",
+    "OHM",
+    # The gate contract: the one permitting outcome, and the recorded status
+    "GATE_OUTCOME_THAT_PERMITS_COMPUTATION",
+    "ALL_GATES_PASSED",
+    "NO_INTENT_REASON",
+    "S11_KEY",
 ]
