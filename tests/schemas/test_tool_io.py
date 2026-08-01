@@ -34,7 +34,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from hfss_agent.contract import (
     AuditRecord,
-    Environment,
     Finding,
     FreshnessEvidence,
     InspectionProvenance,
@@ -77,6 +76,7 @@ from hfss_agent.contract.tool_io import (
     MetricsComputed,
     MetricsRefused,
     NativeValidationBlock,
+    PreflightEnvironment,
     PreflightReport,
     SelectionChain,
     SelectionOption,
@@ -598,8 +598,12 @@ def test_inspection_result_rejects_provenance_record(
 
 
 def test_preflight_and_process_schemas_construct() -> None:
-    env = Environment(
+    # The ATTACHED shape: all four versions known, and the AEDT one attributed
+    # to the session it was read from. The pre-attach shape is exercised
+    # separately below, because it is the one the §2 Environment could not hold.
+    env = PreflightEnvironment(
         aedt_version="2026.1",
+        aedt_version_source="attached_session",
         pyaedt_version="1.2.0",
         python_version="3.12.4",
         wrapper_version="0.0.0",
@@ -638,6 +642,94 @@ def test_preflight_and_process_schemas_construct() -> None:
         template_text="[processes] 1 running",
     )
     assert processes.processes[0].process_id == 4321
+
+
+# --- PreflightEnvironment: the pre-attach shape and its one invariant --------
+#
+# WHY THIS TYPE EXISTS AT ALL, restated once here so a reader of the tests does
+# not have to find the schema to know what is being protected: preflight runs
+# BEFORE any attach, preflight_environment has no cannot_evaluate arm and no
+# refusal arm, and the §2 Environment requires four versions only an attached
+# session can supply. Without a parallel type the honest pre-attach report was
+# unconstructible. The first test below IS that state; the rest guard the one
+# invariant the type adds.
+
+
+def test_preflight_environment_allows_absent_aedt_and_pyaedt() -> None:
+    """The pre-attach state on a machine with no AEDT and no ``live`` extra.
+
+    This is not an edge case, it is the ordinary Journey 1.0 starting point and
+    it is also public CI's own configuration — ``uv sync`` runs without the
+    ``live`` extra on both OS legs, so ``pyaedt_version`` genuinely has no value
+    there. A required field would make this report unconstructible in the very
+    environment it exists to describe.
+    """
+    environment = PreflightEnvironment(
+        python_version="3.12.10", wrapper_version="0.3.0"
+    )
+    assert environment.aedt_version is None
+    assert environment.aedt_version_source is None
+    assert environment.pyaedt_version is None
+    # The two that are never absent stay required: omitting either is an error,
+    # not a defaulted None. Asserted so a future edit cannot quietly give them
+    # defaults and turn "always determinable" into "usually populated".
+    with pytest.raises(ValidationError):
+        PreflightEnvironment(wrapper_version="0.3.0")
+    with pytest.raises(ValidationError):
+        PreflightEnvironment(python_version="3.12.10")
+
+
+def test_preflight_environment_rejects_a_version_without_a_source() -> None:
+    # An unattributed version claim: the consumer cannot tell whether this is
+    # the version of the process we are attached to or a guess about which
+    # process an attach might bind to.
+    with pytest.raises(ValidationError) as caught:
+        PreflightEnvironment(
+            aedt_version="2026.1",
+            python_version="3.12.10",
+            wrapper_version="0.3.0",
+        )
+    assert "must both be present or both be absent" in str(caught.value)
+
+
+def test_preflight_environment_rejects_a_source_without_a_version() -> None:
+    # The mirror case, tested separately rather than parametrized: a one-sided
+    # validator would pass one of these two and fail the other, and a single
+    # combined test could not say which half broke.
+    with pytest.raises(ValidationError) as caught:
+        PreflightEnvironment(
+            aedt_version_source="installed_scan",
+            python_version="3.12.10",
+            wrapper_version="0.3.0",
+        )
+    assert "must both be present or both be absent" in str(caught.value)
+
+
+@pytest.mark.parametrize("source", ["attached_session", "installed_scan"])
+def test_preflight_environment_accepts_both_legal_sources(source: str) -> None:
+    # The positive control for the two tests above. Without it they would still
+    # pass against a validator that rejected everything.
+    environment = PreflightEnvironment(
+        aedt_version="2026.1",
+        aedt_version_source=source,  # type: ignore[arg-type]
+        python_version="3.12.10",
+        wrapper_version="0.3.0",
+    )
+    assert environment.aedt_version_source == source
+
+
+def test_preflight_environment_rejects_an_unknown_source() -> None:
+    # The Literal is what keeps the provenance a closed vocabulary. A third
+    # source would be a new KIND of claim about where a version came from, and
+    # it must not be introducible by a producer typo — "scan" reads plausible
+    # and would mean nothing to a consumer branching on the two real values.
+    with pytest.raises(ValidationError):
+        PreflightEnvironment(
+            aedt_version="2026.1",
+            aedt_version_source="scan",  # type: ignore[arg-type]
+            python_version="3.12.10",
+            wrapper_version="0.3.0",
+        )
 
 
 def test_session_and_selection_schemas_construct(variation: Variation) -> None:
