@@ -34,6 +34,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from hfss_agent.contract import (
     AuditRecord,
+    Environment,
     Finding,
     FreshnessEvidence,
     InspectionProvenance,
@@ -612,10 +613,19 @@ def test_preflight_and_process_schemas_construct() -> None:
         environment=env,
         checks=[
             ComponentCheck(
+                component="aedt",
+                detected="2021.2",
+                required="AEDT 2022.2 or later; 2026.1 confirmed",
+                status="incompatible",
+                severity="required",
+                detail="Installed AEDT predates PyAEDT's 2022 R2 floor.",
+            ),
+            ComponentCheck(
                 component="pyaedt",
                 detected="1.2.0",
                 required=">=1.2,<1.3",
                 status="ok",
+                severity="required",
                 detail="Supported.",
             ),
             ComponentCheck(
@@ -623,7 +633,11 @@ def test_preflight_and_process_schemas_construct() -> None:
                 detected=None,
                 required="valid AEDT license",
                 status="unavailable",
-                detail="No license server reachable.",
+                severity="advisory",
+                detail=(
+                    "License configuration is not read and no checkout was "
+                    "attempted; AEDT reports licensing at attach time."
+                ),
             ),
         ],
         support_matrix_ref="docs/support-matrix.md",
@@ -730,6 +744,196 @@ def test_preflight_environment_rejects_an_unknown_source() -> None:
             python_version="3.12.10",
             wrapper_version="0.3.0",
         )
+
+
+def test_preflight_report_rejects_the_snapshot_environment_type() -> None:
+    """``PreflightReport`` takes the parallel type, never the §2 ``Environment``.
+
+    The one test that would catch a future "simplification" back to the type
+    that could not represent a pre-attach report. Mirrors
+    ``test_inspection_result_rejects_provenance_record``.
+
+    The rejection is a ``model_type`` error, checked rather than assumed:
+    pydantic will take a dict or a ``PreflightEnvironment``, and does NOT
+    structurally coerce a different ``BaseModel`` subclass just because its
+    fields line up. So the guard here is the annotation itself, not the
+    both-or-neither validator — which never runs, because validation fails
+    before ``PreflightEnvironment`` is ever constructed. Worth knowing: it means
+    the two types stay distinct even though ``Environment``'s four fields are a
+    superset-by-name of the two required ones here.
+    """
+    snapshot_environment = Environment(
+        aedt_version="2026.1",
+        pyaedt_version="1.2.0",
+        python_version="3.12.4",
+        wrapper_version="0.0.0",
+    )
+    with pytest.raises(ValidationError):
+        PreflightReport(
+            environment=snapshot_environment,
+            checks=[_required_check("python", "ok")],
+            support_matrix_ref="docs/support-matrix.md",
+            overall="ok",
+            template_text="",
+        )
+
+
+# --- PreflightReport: the three roll-up validators ---------------------------
+#
+# ``overall`` is two-state while ``ComponentCheck.status`` is three-state, so
+# the mapping between them is a rule rather than a projection, and all three
+# validators exist to stop a report disagreeing with its own evidence. The
+# helpers below keep each test's fixture down to the one thing it varies.
+
+
+def _check(component: str, status: str, severity: str) -> ComponentCheck:
+    return ComponentCheck(
+        component=component,
+        detected=None,
+        required="...",
+        status=status,  # type: ignore[arg-type]
+        severity=severity,  # type: ignore[arg-type]
+        detail="...",
+    )
+
+
+def _required_check(component: str, status: str) -> ComponentCheck:
+    return _check(component, status, "required")
+
+
+def _advisory_check(component: str, status: str) -> ComponentCheck:
+    return _check(component, status, "advisory")
+
+
+def _report(checks: list[ComponentCheck], overall: str) -> PreflightReport:
+    return PreflightReport(
+        environment=PreflightEnvironment(
+            python_version="3.12.10", wrapper_version="0.3.0"
+        ),
+        checks=checks,
+        support_matrix_ref="docs/support-matrix.md",
+        overall=overall,  # type: ignore[arg-type]
+        template_text="",
+    )
+
+
+def test_component_check_requires_an_explicit_severity() -> None:
+    # No default, for the reason SelectionRefused.outcome and
+    # ExportRefused.outcome have none: a defaulted discriminator lets a new
+    # construction site inherit a value nobody chose. Here that would mean a
+    # newly added component silently stopping (or starting) to demote `overall`.
+    with pytest.raises(ValidationError):
+        ComponentCheck(
+            component="aedt",
+            detected=None,
+            required="...",
+            status="ok",
+            detail="...",
+        )
+
+
+def test_component_check_rejects_an_unknown_severity() -> None:
+    with pytest.raises(ValidationError):
+        _check("aedt", "ok", "informational")
+
+
+def test_preflight_report_rejects_zero_checks() -> None:
+    """The hole found by construction, not by reading the validators.
+
+    With no checks at all, both evidence-reasoning validators are satisfied
+    vacuously — nothing is unavailable, nothing is incompatible — and the report
+    declares an unexamined machine healthy.
+    """
+    with pytest.raises(ValidationError) as caught:
+        _report([], "ok")
+    assert "at least one severity='required' check" in str(caught.value)
+
+
+def test_preflight_report_rejects_advisory_only_checks() -> None:
+    # The same hole, one step less degenerate and far more likely: a producer
+    # bug drops the required rows and leaves an advisory one, so `checks` is
+    # non-empty and the report still rests on no evidence.
+    with pytest.raises(ValidationError) as caught:
+        _report([_advisory_check("license", "unavailable")], "ok")
+    assert "at least one severity='required' check" in str(caught.value)
+
+
+def test_preflight_report_rejects_an_unavailable_required_check() -> None:
+    # Absence is a determination: a required component that cannot be
+    # determined is a producer bug, not a description of the machine.
+    with pytest.raises(ValidationError) as caught:
+        _report([_required_check("aedt", "unavailable")], "incompatible")
+    assert "structurally determinable" in str(caught.value)
+
+
+def test_preflight_report_rejects_overall_ok_with_a_failing_required_check() -> None:
+    # Under-reporting: the false reassurance.
+    with pytest.raises(ValidationError) as caught:
+        _report([_required_check("aedt", "incompatible")], "ok")
+    assert "so overall must be 'incompatible'" in str(caught.value)
+
+
+def test_preflight_report_rejects_overall_incompatible_with_all_required_ok() -> None:
+    # Over-reporting, the opposite bug: if an advisory `unavailable` demoted,
+    # every environment would be incompatible forever, because the license row
+    # can never be anything else. This is the test that pins that it does not.
+    with pytest.raises(ValidationError) as caught:
+        _report(
+            [
+                _required_check("aedt", "ok"),
+                _advisory_check("license", "unavailable"),
+            ],
+            "incompatible",
+        )
+    assert "so overall must be 'ok'" in str(caught.value)
+
+
+def test_a_healthy_machine_with_three_undeterminable_advisories_is_ok() -> None:
+    """The positive control, and the case the naive rules get wrong.
+
+    All three required components pass; all three advisory ones are
+    ``unavailable`` and always will be — license checkout is forbidden by zero
+    egress, gRPC transport is a per-process property read at attach, and process
+    listing is deferred. "Any unavailable demotes" would mark this machine, and
+    every machine, incompatible forever. It rolls up to ``ok``.
+    """
+    report = _report(
+        [
+            _required_check("aedt", "ok"),
+            _required_check("pyaedt", "ok"),
+            _required_check("python", "ok"),
+            _advisory_check("grpc", "unavailable"),
+            _advisory_check("license", "unavailable"),
+            _advisory_check("processes", "unavailable"),
+        ],
+        "ok",
+    )
+    assert report.overall == "ok"
+
+
+def test_a_partial_drop_of_required_checks_is_not_caught_by_the_contract() -> None:
+    """THE STATED LIMIT, asserted rather than only documented.
+
+    One required check survives and the other two were dropped, so the report
+    rolls up to ``ok`` on a machine whose AEDT and PyAEDT were never examined.
+    This VALIDATES, deliberately: the evidence validator requires that evidence
+    exists, not that it is complete, and completeness cannot be checked here
+    without encoding W-11's component list into the contract — which would make
+    every future component a semver event on a doubly-pinned artifact.
+
+    Completeness is W-11's invariant and is pinned in W-11's own suite by a test
+    over the exact component tuple ``("aedt", "pyaedt", "python", "grpc",
+    "license", "processes")``, asserted across every probe-failure scenario
+    rather than only the happy path (Step 2.4b).
+
+    A limit that lives only in prose is one the next reader can talk themselves
+    out of. This test makes moving the boundary a deliberate edit: if a future
+    change tightens the contract to catch this, this test fails and its author
+    has to decide, in the open, that the coupling is worth it.
+    """
+    report = _report([_required_check("python", "ok")], "ok")
+    assert report.overall == "ok"
+    assert [check.component for check in report.checks] == ["python"]
 
 
 def test_session_and_selection_schemas_construct(variation: Variation) -> None:

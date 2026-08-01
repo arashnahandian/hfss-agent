@@ -114,14 +114,62 @@ class PreflightEnvironment(StrictModel):
 class ComponentCheck(StrictModel):
     """One component checked against the published support matrix (W-11).
 
-    ``detected`` is None when the component is not present/detectable (e.g. no
-    AEDT install found); the verdict then lives in ``status``.
+    ``detected`` is None when the component is not present or not determinable;
+    the verdict then lives in ``status``.
+
+    ``status`` DISTINGUISHES TWO FACTS THAT MUST NOT BE CONFLATED, and that
+    distinction is what makes ``PreflightReport.overall`` computable at all:
+
+      * ``ok`` — determined, and the matrix requirement is met;
+      * ``incompatible`` — DETERMINED, and the requirement is not met.
+        ABSENCE IS A DETERMINATION: no AEDT installation root, or no installed
+        ``pyaedt`` distribution, is a fact we established, not one we failed to
+        establish. Verified against PyAEDT 1.2.0 rather than assumed —
+        ``Desktop.__init__`` calls ``__check_version`` before choosing any
+        transport, and with no ``ANSYSEM_ROOT*``/``AWP_ROOT*`` variable set both
+        ``current_version`` and ``latest_version`` resolve to ``""`` and it
+        raises ``AEDTRuntimeError``. Attach is impossible, not merely
+        unverified.
+      * ``unavailable`` — this wrapper structurally CANNOT determine it.
+        Exactly three components sit here today, each for a named reason:
+        license checkout (zero egress forbids contacting the server), gRPC
+        transport (a per-process property PyAEDT reads from ``active_sessions()``
+        at attach, where port ``-1`` means a COM session that still attaches),
+        and the running-process listing (deferred, ADR-18 decision 1).
+
+    ``severity`` says whether a failure here blocks the user: required
+    components are those without which no attach can occur; advisory ones are
+    reported for information and are resolved at attach time. It exists because
+    both obvious roll-up rules are wrong. "Only ``incompatible`` demotes" would
+    report a machine with AEDT but no PyAEDT as healthy; "any ``unavailable``
+    demotes" would mark every machine on earth incompatible forever, because the
+    license row can never be anything else. Neither is survivable, and the
+    difference between them is exactly this field.
+
+    ``severity`` is REQUIRED WITH NO DEFAULT, for the reason
+    ``SelectionRefused.outcome`` and ``ExportRefused.outcome`` have none: a
+    defaulted discriminator lets a new construction site silently inherit a
+    value nobody chose. Defaulting to ``"advisory"`` would mean a newly added
+    component quietly stops demoting ``overall``; defaulting to ``"required"``
+    would mean it starts blocking on something nobody decided was blocking.
+
+    ``component`` is a plain ``str`` and deliberately NOT a ``Literal``, unlike
+    ``status`` and ``severity`` beside it. Those two are CLOSED VOCABULARIES OF
+    MEANING — a fourth ``status`` would be a new kind of verdict. ``component``
+    is an INVENTORY of what W-11 happens to check, fixed by §1.1's prose rather
+    than by this contract, and pulling it in here would make every future
+    component a semver event on a doubly-pinned artifact. Which components must
+    be present, and in what order, is W-11's invariant and is pinned by a test
+    over the exact component tuple.
     """
 
-    component: str  # e.g. "aedt", "pyaedt", "python", "grpc", "license"
+    # The six §1.1 W-11 names. This comment listed five and omitted "processes";
+    # corrected here, and the tuple is pinned in W-11's own suite, not by a type.
+    component: str  # "aedt", "pyaedt", "python", "grpc", "license", "processes"
     detected: str | None
     required: str  # support-matrix requirement, in plain language
     status: Literal["ok", "incompatible", "unavailable"]
+    severity: Literal["required", "advisory"]
     detail: str
 
 
@@ -138,6 +186,13 @@ class PreflightReport(StrictModel):
     this response has no cannot_evaluate arm to fall back on — so a pre-attach
     report was unconstructible without fabricating a version. Restoring
     ``Environment`` here would re-create that dead end.
+
+    ``overall`` STAYS TWO-STATE, and the three validators below are what make
+    that honest. A third state mirroring ``ComponentCheck.status`` was
+    considered and rejected: under the status semantics documented on that type
+    no required check can ever be ``unavailable``, so the arm would be
+    unreachable — and this contract does not advertise states no producer can
+    emit (see ``AttachResult``'s missing refusal arm below).
     """
 
     environment: PreflightEnvironment
@@ -145,6 +200,101 @@ class PreflightReport(StrictModel):
     support_matrix_ref: str
     overall: Literal["ok", "incompatible"]
     template_text: str
+
+    @model_validator(mode="after")
+    def _a_verdict_rests_on_at_least_one_required_check(self) -> "PreflightReport":
+        """``overall`` is a verdict, and a verdict needs evidence behind it.
+
+        WITHOUT THIS, THE TWO VALIDATORS BELOW PASS VACUOUSLY. An empty
+        ``checks`` list — or one holding only advisory rows after a producer
+        dropped the required ones — has nothing unavailable and nothing
+        incompatible, so both of them are satisfied and the report declares an
+        unexamined machine healthy. That was found by constructing the object,
+        not by reading the validators, and this guard is the answer to it.
+
+        HONEST LIMIT, stated because the opposite is the natural assumption:
+        this requires that evidence EXISTS, not that it is COMPLETE. A report
+        carrying one healthy required check while the other required rows were
+        dropped still validates, and a test asserts that it does, so the
+        boundary has to be edited deliberately rather than drifted across.
+        Completeness — which components must be present, and in what order — is
+        W-11's invariant, pinned there by a test over the exact component tuple.
+        Encoding that list here would couple the contract to a module's spec
+        (see ``ComponentCheck.component``).
+        """
+        if not any(check.severity == "required" for check in self.checks):
+            raise ValueError(
+                "a PreflightReport must carry at least one severity='required' "
+                f"check; got {len(self.checks)} check(s), none required. "
+                "'overall' is a verdict, and a verdict with no evidence behind "
+                "it would report an unexamined machine as healthy."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _required_checks_are_always_determinable(self) -> "PreflightReport":
+        """No required component may report ``unavailable``.
+
+        This is the false-reassurance guard, stated as the invariant it actually
+        is. Every required component is structurally determinable: the AEDT
+        install scan always returns a set (empty is an answer, not a failure),
+        ``importlib.metadata`` either yields a version or says the distribution
+        is absent, and the running interpreter's own version cannot fail to
+        read. So a required component reporting ``unavailable`` does not
+        describe the user's machine — it describes a bug in the producer, and
+        its consequence would be a report rolling up to ``ok`` with something
+        load-bearing left unchecked.
+
+        A BACKSTOP, NOT THE MECHANISM. W-11's probes are total by construction:
+        each returns a value and none raises, so no production path reaches
+        this. It fires only on a producer defect — which matters, because this
+        response has no ``cannot_evaluate`` arm, so a firing validator surfaces
+        as a raised error on the first tool of Journey 1.0, on the machine least
+        likely to be healthy. Keeping the probes total is what keeps that
+        theoretical.
+        """
+        undetermined = [
+            check.component
+            for check in self.checks
+            if check.severity == "required" and check.status == "unavailable"
+        ]
+        if undetermined:
+            raise ValueError(
+                f"required component(s) {undetermined} report "
+                "status='unavailable', but every required component is "
+                "structurally determinable — absence is a determination and "
+                "belongs under status='incompatible'. Reporting one as "
+                "undetermined would let this report roll up to 'ok' with a "
+                "load-bearing component unchecked."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _overall_matches_the_required_checks(self) -> "PreflightReport":
+        """``overall`` is 'incompatible' IF AND ONLY IF a required check is.
+
+        BOTH DIRECTIONS, because the two failures are opposite and equally
+        real. Under-reporting is the false reassurance: a machine with no AEDT
+        told its environment is fine. Over-reporting is the permanent demotion:
+        if an advisory ``unavailable`` demoted, every environment would be
+        incompatible forever, since the license row can never be anything else.
+        Enforcing the equivalence means a producer can commit neither, and a
+        report can never disagree with its own evidence.
+        """
+        blocking = [
+            check.component
+            for check in self.checks
+            if check.severity == "required" and check.status == "incompatible"
+        ]
+        expected = "incompatible" if blocking else "ok"
+        if self.overall != expected:
+            raise ValueError(
+                f"overall={self.overall!r} contradicts the checks: required "
+                f"component(s) failing = {blocking or 'none'}, so overall must "
+                f"be {expected!r}. A verdict that disagrees with its own "
+                "evidence is the one thing this report must never carry."
+            )
+        return self
 
 
 # --- list_aedt_processes -----------------------------------------------------
