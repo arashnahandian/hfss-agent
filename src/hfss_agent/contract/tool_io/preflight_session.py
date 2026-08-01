@@ -201,6 +201,16 @@ class PreflightReport(StrictModel):
     overall: Literal["ok", "incompatible"]
     template_text: str
 
+    # DECLARATION ORDER BELOW IS LOAD-BEARING: REORDERING THESE IS A BEHAVIOUR
+    # CHANGE, NOT A TIDY-UP. A raising ``mode="after"`` validator short-circuits
+    # the rest of the chain, so on an input that violates more than one of them
+    # pydantic reports exactly ONE error, and it is the first one declared here.
+    # Measured, not inferred: on ``checks=[]`` with ``overall="incompatible"``
+    # the first and third both apply, ``error_count()`` is 1, and swapping the
+    # declaration order in an equivalent pair swaps which message the caller
+    # sees. The evidence check is first on purpose — "you have no evidence" is
+    # the useful thing to say to someone whose report also happens to disagree
+    # with evidence it does not have.
     @model_validator(mode="after")
     def _a_verdict_rests_on_at_least_one_required_check(self) -> "PreflightReport":
         """``overall`` is a verdict, and a verdict needs evidence behind it.

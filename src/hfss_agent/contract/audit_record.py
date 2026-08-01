@@ -21,6 +21,43 @@ class AuditRecord(StrictModel):
     broker before they land here; the schema carries them, it does not sanitize.
     ``snapshot_id`` is present only when the call emitted a snapshot.
 
+    WHAT "SANITIZED" MEANS HERE, AND WHAT IT DOES NOT. It means the ADR-9
+    untrusted-string treatment applied by ``adapter.sanitize``: control
+    characters stripped (tab and newline deliberately kept) and each string
+    length-capped with a visible truncation marker. That is a defence against
+    HFSS-sourced text steering a downstream renderer, and it is by design
+    NON-DESTRUCTIVE — the sanitizer's own docstring says it neutralizes hostile
+    content "by framing/typing … never by rewriting it".
+
+    IT IS NOT IDENTITY REDACTION. Nothing on this record has been anonymised. A
+    project named for a customer arrives here spelled exactly as HFSS spelled
+    it. The two mechanisms defend against different things — prompt injection
+    versus identity leakage in a file a user emails to a support channel — and
+    reading this field name as "safe to share" is the mistake most likely to
+    turn a diagnostics bundle into a disclosure. Anything leaving this machine
+    must be redacted separately, by whatever produces it.
+
+    WHAT ``selection_state`` ACTUALLY CARRIES, verified by driving a real
+    dispatch rather than read off the type. The broker fills it from the
+    selection chain captured BEFORE the handler runs, so its seven keys —
+    ``process_id``, ``project``, ``design``, ``solution_type``, ``setup``,
+    ``sweep``, ``variation`` — are ALWAYS present, while their values are
+    whatever had been selected at that moment:
+
+      * every value is ``None`` when nothing has been selected yet. That
+        covers a never-attached session, a call refused for having no session,
+        and — because the capture precedes the handler — the ``attach`` call's
+        own record;
+      * values fill in as the chain is built, so a mid-selection record is
+        partial;
+      * once a project and design are selected, records carry the project NAME,
+        the project's absolute filesystem PATH, and the design, solution type,
+        setup and sweep names.
+
+    So this field is not identifying on every record, but it is identifying on
+    any record made while a design was selected — which is most of a real
+    session's log, and includes the project's path on disk.
+
     ``risk_tier`` is ``None`` for exactly one thing: a dispatch of a name the
     registry does not hold, which has no tier to state and must not be given a
     fabricated one ("safe" would be a false claim about an unknown thing;
