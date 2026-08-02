@@ -19,7 +19,9 @@ them is evidence.
   neither built against nor exercised here.
 - **`beyond-pin`** — above the newest version the pinned dependency knows about,
   or above a ceiling this project chose. Not blocked, not endorsed.
-- **`unsupported`** — below a floor the dependency itself states.
+- **`unsupported`** — outside what this project will support. The floor may be
+  one the dependency states, one it merely warns at, or one only this project
+  sets; the band says which.
 
 **Validation status — whether a live, licensed AEDT/HFSS session has confirmed
 the row.**
@@ -254,8 +256,8 @@ assumption written as a statement stops being visible.
   advisory it is today; if it fails cleanly, the band should say so plainly.
 - **How far down does `2022.2 <= v < 2026.1` really hold?** Record the oldest
   AEDT version against which the adapter's reads were confirmed. That version,
-  not PyAEDT's floor, is the honest lower edge of `expected` — and until one is
-  recorded the band rests entirely on the dependency's claim.
+  not PyAEDT's warning threshold, is the honest lower edge of `expected` — and
+  until one is recorded the band rests entirely on the dependency's claim.
 - **On a multi-version machine, which install does an attach bind to?**
   `aedt_version` is reported only when the installed set has exactly one member
   or a session is attached, because PyAEDT resolves the target by matching the
