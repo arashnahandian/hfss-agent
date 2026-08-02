@@ -122,10 +122,10 @@ reject it. Attach may well proceed — through code paths written before that AE
 version existed. `beyond-pin` is the honest verdict: not blocked, not endorsed,
 and specifically **not** reported as "AEDT not installed."
 
-### `v < 2022.2` — below PyAEDT's own stated floor
+### `v < 2022.2` — our floor, standing on PyAEDT's warning
 
-The one boundary this project did not choose. PyAEDT states it itself, in
-`.venv/Lib/site-packages/ansys/aedt/core/desktop.py:2838-2841`:
+The one boundary whose number this project did not pick. PyAEDT states it
+itself, in `.venv/Lib/site-packages/ansys/aedt/core/desktop.py:2838-2841`:
 
 ```python
 elif float(specified_version[0:6]) < 2022.2:
