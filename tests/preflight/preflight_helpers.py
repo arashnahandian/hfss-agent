@@ -21,9 +21,11 @@ from datetime import datetime, timezone
 
 from hfss_agent.adapter.fake import FakeAdapter, Scenario
 from hfss_agent.broker import (
+    AuditLogWriter,
     Broker,
     CapabilityRegistry,
     RefuseAllConfirmer,
+    audit_capabilities,
     session_routed_specs,
 )
 from hfss_agent.contract import AuditRecord, Environment
@@ -164,6 +166,53 @@ KNOWN_TOOL_NAMES: frozenset[str] = frozenset(
         "get_audit_log",
     }
 )
+
+
+def bundle_broker(
+    log_path: str, aedt_version: str = "2026.1"
+) -> tuple[Broker, RecordingSink, frozenset[str]]:
+    """An ATTACHED broker whose audit log is the file at ``log_path``, plus the
+    tool names THE COMPOSITION SITE knows.
+
+    The third return value is the point. The registry is built here, from the
+    spec builders, so every declared name is in hand BEFORE ``CapabilityRegistry``
+    is constructed — which is why the bundle can be handed its allow-list as
+    data and needs neither a new public accessor on ``Broker`` nor a reach into
+    ``Broker._registry``. This function IS the composition site the ruling
+    points at, in miniature.
+    """
+    scenario = Scenario(
+        environment=Environment(
+            aedt_version=aedt_version,
+            pyaedt_version="1.2.0",
+            python_version="3.12.4",
+            wrapper_version="0.0.0",
+        )
+    )
+    session = Session(FakeAdapter(scenario))
+    session.attach(DEFAULT_PID)
+    specs = session_routed_specs(session) + audit_capabilities(log_path)
+    names = frozenset(spec.name for spec in specs)
+    sink = RecordingSink()
+    broker = Broker(
+        session=session,
+        registry=CapabilityRegistry(specs),
+        audit_sink=sink,
+        confirmer=RefuseAllConfirmer(),
+    )
+    return broker, sink, names
+
+
+def write_hostile_log(log_path: str) -> None:
+    """The hostile fixture, written as the JSONL the reader actually parses.
+
+    Written through the broker's own writer rather than hand-rolled, so the
+    bundle reads records that made the real round trip: a redaction that only
+    works on in-memory objects would be untested against what the log holds.
+    """
+    writer = AuditLogWriter(log_path)
+    for record in hostile_audit_records():
+        writer.append(record)
 
 
 def _record(
