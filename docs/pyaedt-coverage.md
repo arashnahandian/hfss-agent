@@ -177,3 +177,46 @@ A live pass should record:
 If the real spelling differs, the refusal is expected to fire loudly at Phase
 5.2 — that is the intended outcome, not a regression. Fix it at the source that
 produces the key, and record the confirmed spelling here.
+
+### AEDT install detection in `preflight` (Step 2.4b — not an adapter operation)
+
+Introduced with W-11's probes. **This section carries no `mock-only` status,
+and the omission is deliberate:** those two states describe whether a real
+PyAEDT *call* behaves as assumed, and `preflight` makes none — it does not
+import `pyaedt`, reach the adapter, or open a session (ADR-26 decision 1). What
+follows is recorded here anyway because this file is the ledger for exactly this
+class of assumption: a documented PyAEDT behaviour this package depends on
+without having met it live.
+
+W-11 reimplements PyAEDT's own installed-version scan rather than calling it,
+because calling it would mean importing `pyaedt` in a module that must work
+without it. The reimplementation is a deliberate, forced duplicate (ADR-26
+alternative (h)) and it can therefore disagree with the original. One
+disagreement is known and was chosen:
+
+- **Does a real machine ever have a FILE where the `AnsysEM` subdirectory
+  belongs?** PyAEDT counts an `AWP_ROOT*` variable as an install only when
+  `<root>/AnsysEM` exists, testing it with `Path(...).exists()` — which is true
+  for a file as well as a directory. W-11 uses `os.path.isdir`, which is not.
+  On such a machine PyAEDT reports an install and this wrapper reports none, so
+  preflight would say `incompatible` where an attach would in fact proceed.
+  `isdir` was chosen because it is what the check actually means and because
+  under-reporting is the safer error — telling a user their environment is not
+  ready is recoverable, telling them it is ready for an attach that cannot
+  happen is not. But it IS a disagreement with the dependency rather than a
+  match, so a live pass should record whether the shape occurs at all. If it
+  never does, the two are equivalent in practice and this note can be closed; if
+  it does, the choice needs re-deciding on evidence rather than on which error
+  is safer.
+- **Does the scan agree with PyAEDT's on a machine with a stale root
+  variable?** An `AWP_ROOT*` left behind by an uninstall, or pointing at a
+  directory that no longer holds `AnsysEM`, is the case the subdirectory check
+  exists for. Confirm the two implementations return the same install set on a
+  machine that has one.
+- **Does `Desktop.aedt_version_id` ever return something
+  `parse_dotted_version` cannot read?** W-11 parses the attached session's
+  version rather than passing it through, and falls back to the installed scan
+  when it will not parse (see `preflight/assembler.py`). The fallback has never
+  been exercised against a real session because no real session has run. Record
+  the exact string a live attach yields, and whether it is ever anything other
+  than `year.release`.
