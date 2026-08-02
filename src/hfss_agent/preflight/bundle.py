@@ -45,12 +45,7 @@ import json
 from collections.abc import Iterable
 
 from hfss_agent.broker import Broker, BrokerFileError
-from hfss_agent.contract.tool_io import (
-    AuditLog,
-    ExportFailed,
-    ExportResult,
-    PreflightReport,
-)
+from hfss_agent.contract.tool_io import AuditLog, ExportFailed, ExportResult
 from hfss_agent.preflight.assembler import preflight_environment
 from hfss_agent.preflight.probes import EnvironmentProbes
 from hfss_agent.preflight.redaction import (
@@ -312,16 +307,3 @@ def _write_failure_text(exc: BrokerFileError) -> str:
             "removed, and you may delete it yourself."
         )
     return text
-
-
-def preflight_report_for_bundle(
-    probes: EnvironmentProbes, broker: Broker
-) -> PreflightReport:
-    """The report the bundle embeds, exposed for callers that want both.
-
-    A convenience over ``preflight_environment`` with no logic of its own: the
-    Step 3.x tool surface returns a report AND writes a bundle, and building
-    the report twice would let the two disagree if the machine changed between
-    them.
-    """
-    return preflight_environment(probes, broker)

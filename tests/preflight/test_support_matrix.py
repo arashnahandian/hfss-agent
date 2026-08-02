@@ -44,6 +44,131 @@ def test_support_matrix_ref_is_the_published_value() -> None:
     assert SUPPORT_MATRIX_REF == "docs/support-matrix.md"
 
 
+def _is_separator(cells: list[str]) -> bool:
+    """True for a markdown table's header/body separator row.
+
+    STRUCTURAL, NOT LITERAL. The first version of this parse dropped the
+    separator by matching the exact string ``"----------------"``, which meant
+    reformatting the table's dashes would make the separator parse as a DATA
+    row — and the "exactly one target" assertion would still have passed while
+    the helper quietly returned a malformed row. This step has twice found tests
+    passing for reasons unrelated to what they asserted, and that is the same
+    family, so the rule is now what actually defines a separator: every cell
+    consists only of dashes and alignment colons. No dash count, no alignment
+    style (``---``, ``:---``, ``---:``, ``:---:``) can defeat it, and a real
+    data cell — which always contains at least one other character — can never
+    be mistaken for one.
+    """
+    return bool(cells) and all(
+        cell and set(cell) <= {"-", ":"} for cell in cells
+    )
+
+
+def _aedt_table_rows() -> list[list[str]]:
+    """The AEDT table's data rows, as stripped cells.
+
+    Scoped to the ``## AEDT`` section rather than the whole file, because all
+    three tables carry a ``target`` row and a file-wide search would find the
+    Python one just as happily.
+
+    THE HEADER IS DROPPED BY POSITION, NOT BY ITS TEXT. Markdown fixes the
+    order — header, separator, then body — so everything at or before the
+    structurally-identified separator is not data. That removes the second
+    literal the first version carried (matching the header cell ``"Support
+    status"``), which would have broken just as quietly if a column were ever
+    renamed.
+
+    A row whose width does not match the header's RAISES rather than being
+    returned. Silently handing back a malformed row is exactly the failure this
+    helper was rewritten to prevent, so it is made loud instead.
+    """
+    lines = (_REPO_ROOT / SUPPORT_MATRIX_REF).read_text(encoding="utf-8").splitlines()
+    start = lines.index("## AEDT")
+    end = next(
+        index
+        for index, line in enumerate(lines[start + 1 :], start + 1)
+        if line.startswith("## ")
+    )
+    rows = [
+        [cell.strip() for cell in line.strip("|").split("|")]
+        for line in lines[start:end]
+        if line.startswith("|")
+    ]
+    separator = next(
+        (index for index, row in enumerate(rows) if _is_separator(row)), None
+    )
+    assert separator is not None, "the AEDT table has no header separator row"
+    width = len(rows[0])
+    body = rows[separator + 1 :]
+    malformed = [row for row in body if len(row) != width]
+    assert not malformed, (
+        f"the AEDT table has row(s) whose width differs from the {width}-column "
+        f"header: {malformed}"
+    )
+    return body
+
+
+@pytest.mark.parametrize(
+    ("cells", "expected"),
+    [
+        (["----", "----"], True),
+        (["-", "-"], True),
+        (["-" * 40, "-" * 3], True),
+        ([":---", "---:"], True),
+        ([":---:", ":-:"], True),
+        (["`2026.1`", "target"], False),
+        (["v < 2022.2", "unsupported"], False),
+        (["AEDT version", "Support status"], False),
+        (["", ""], False),
+        ([], False),
+    ],
+)
+def test_the_separator_filter_cannot_be_defeated_by_reformatting(
+    cells: list[str], expected: bool
+) -> None:
+    """The regression guard for the brittleness this helper was rewritten for.
+
+    The first version matched the separator by its exact dash count, so
+    reformatting the table would have turned the separator into an apparent
+    data row without failing anything. This pins the structural rule instead:
+    dashes and alignment colons only, at any length and in any alignment style,
+    and never a cell carrying real content.
+    """
+    assert _is_separator(cells) is expected
+
+
+def test_the_documents_anchor_row_agrees_with_the_code() -> None:
+    """THE DOC-TO-CODE LINK, on the file ADR-26 decision 18(d) calls "the
+    specification the classifier reads".
+
+    WHAT THIS MATCH PROVES: the ``## AEDT`` table contains EXACTLY ONE row whose
+    support status is ``target``, and the version in that row's first cell is
+    the same version ``AEDT_ANCHOR`` holds. Change the doc's anchor row to
+    2027.1 without changing the constant and this fails; change the constant
+    without the doc and it fails too. That is the drift the Done bar is about.
+
+    WHAT IT DOES NOT PROVE, stated because a looser version of this test is
+    exactly the vacuity trap this step already fell into once. It does not check
+    the prose: the ``### 2026.1 — the anchor`` heading, the body paragraphs, and
+    the component table's "2026.1 is the target" cell are all unverified and
+    could disagree. It does not check the other three bands, the Python table,
+    or the PyAEDT table. And it deliberately does NOT grep the file for the
+    string "2026.1", which would pass on any of the eleven other mentions —
+    including one inside a sentence about PyAEDT's constant, which is the number
+    the anchor must NOT be derived from.
+    """
+    targets = [row for row in _aedt_table_rows() if row[1] == "target"]
+    assert len(targets) == 1, (
+        f"the AEDT table must name exactly one target version; found {targets}"
+    )
+    documented = targets[0][0].strip("`")
+    assert documented == format_aedt_version(AEDT_ANCHOR), (
+        f"docs/support-matrix.md names {documented!r} as the AEDT target while "
+        f"AEDT_ANCHOR is {format_aedt_version(AEDT_ANCHOR)!r}. The document is "
+        "the specification; the constant implements it, and they have drifted."
+    )
+
+
 def test_support_matrix_ref_names_a_document_that_exists() -> None:
     """The anti-dangling guard.
 

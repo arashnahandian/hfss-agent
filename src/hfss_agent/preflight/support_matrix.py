@@ -7,7 +7,8 @@ the classifier first would have meant inventing the bands and back-filling the
 doc to match, inverting which artifact is authoritative. A band changed here
 without changing the document is a defect even when every test passes.
 
-IMPORT-LIGHT ON PURPOSE — ``re`` and ``typing`` only. Nothing here reads the
+IMPORT-LIGHT ON PURPOSE — ``re``, ``typing`` and ``collections.abc``, and
+nothing else in the standard library or this package. Nothing here reads the
 environment, the filesystem, or installed metadata; those live in ``probes.py``
 behind the injection seam, and a test pins that this module names none of them.
 That split is what lets every band be tested without a machine that has AEDT on

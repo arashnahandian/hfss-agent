@@ -10,7 +10,14 @@ probes and the optional attached-session versions come through the broker's
 non-dispatchable accessor, so **this tool writes no audit record** — the audit
 log is written by ``Broker.dispatch``, and nothing here dispatches.
 
-Layer 4 (§5): imports ``broker`` and ``contract`` only.
+Layer 4 (§5): of the ``hfss_agent`` packages it imports ``broker`` and
+``contract``, plus its own siblings ``preflight.probes`` and
+``preflight.support_matrix``. A package importing its own submodules is not a
+boundary break — ``test_preflight_import_audit.py`` allows ``hfss_agent.preflight``
+explicitly alongside the other two, and forbids everything else. (W-6's assembler
+carries the shorter phrase "imports broker and contract only"; that is accurate
+THERE because it has no sibling submodules to reach, and copying it here would
+have been false.)
 
 ONE ARM, WHICH IS WHY THE PROBES MUST BE TOTAL. ``preflight_environment``
 returns a ``PreflightReport`` or nothing at all — the response has no

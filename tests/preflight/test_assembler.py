@@ -217,6 +217,38 @@ def test_an_attached_broker_reads_the_session() -> None:
     assert "installed-version scan" not in report.template_text
 
 
+def test_an_incompatibility_simulated_by_the_fake_adapter_is_flagged() -> None:
+    """THE RUNBOOK'S DONE BAR, pinned: "preflight check runs against the fake
+    adapter and correctly flags a simulated incompatibility".
+
+    A SEPARATE TEST RATHER THAN AN ASSERTION ADDED TO THE LOST-SESSION ONE, and
+    the reason is that they are different claims. There, the incompatibility
+    would arrive from the injected probe set while the subject under test is the
+    session transition — the verdict would be true but incidental, and a reader
+    could not tell which half the test was protecting.
+
+    Here the FAKE ADAPTER ITSELF SUPPLIES THE INCOMPATIBILITY. The scenario's
+    ``Environment`` reports AEDT 2021.2, the probes contribute no installed
+    version at all, so the only thing that can produce a verdict is the version
+    read back across the broker from the fake session. That is what makes this
+    the runbook's clause rather than a paraphrase of it: the simulation is the
+    adapter's, not the test's.
+
+    Verified by hand during the Part 5 sweep before it was pinned here, which is
+    exactly the evidence a Done bar should not have to rest on.
+    """
+    broker, _ = attached_broker(aedt_version="2021.2")
+    report = preflight_environment(fixture_probes(aedt=()), broker)
+
+    assert report.environment.aedt_version == "2021.2"
+    assert report.environment.aedt_version_source == "attached_session"
+    aedt = _row(report, "aedt")
+    assert aedt.status == "incompatible"
+    assert aedt.severity == "required"
+    assert report.overall == "incompatible"
+    assert 'overall "incompatible"' in report.template_text
+
+
 def test_a_lost_session_does_not_report_attached_session() -> None:
     """THE THIRD DETACHED SHAPE, and the only one that was not obviously safe.
 
