@@ -17,6 +17,7 @@ suite's importability depend on which directory was collected first.
 from __future__ import annotations
 
 from collections.abc import Collection
+from datetime import datetime, timezone
 
 from hfss_agent.adapter.fake import FakeAdapter, Scenario
 from hfss_agent.broker import (
@@ -119,3 +120,149 @@ def detached_broker() -> tuple[Broker, RecordingSink]:
     """A broker whose session was never attached — the pre-attach state Journey
     1.0 actually runs in."""
     return _broker(Session(FakeAdapter()))
+
+
+# --- the hostile redaction fixture -------------------------------------------
+#
+# EVERY NAME BELOW IS INVENTED. No path, username, machine name, project or
+# organisation from this repository or the machine it is built on appears here,
+# because a fixture whose realism came from real data would itself be the
+# disclosure it exists to prevent.
+
+# The identifiers that must never survive redaction. Named once so the tests
+# assert against the same set the fixture plants, and so the negative control
+# can iterate it rather than repeating a literal.
+PLANTED_IDENTIFIERS: tuple[str, ...] = (
+    "kestrel-radar-v7",
+    "northwind-defence",
+    r"D:\clients\northwind-defence\kestrel\kestrel-radar-v7.aedt",
+    "PhasedArray_Tile",
+    "element_pitch_mm",
+    "12.5",
+    "sha256:kestrelvariation",
+    "bluefin-antenna",
+    "export_northwind_q3_report",
+)
+
+# Secret-bearing environment variables. Present on the fixture machine, and
+# absent from anything W-11 can see — the AEDT probe returns install-root NAMES
+# only, so these never enter the process's view of the environment at all.
+SECRET_ENVIRONMENT: dict[str, str] = {
+    "ANSYS_LICENSE_FILE": "1055@licsrv.northwind-defence.example",
+    "NORTHWIND_API_TOKEN": "sk-live-8f3a9c2e4b1d",
+}
+
+# The tool names a registry actually holds, for the ``tool_name`` guard.
+KNOWN_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "attach",
+        "list_selection_options",
+        "select",
+        "get_session_status",
+        "inspect_design",
+        "validate_native",
+        "get_audit_log",
+    }
+)
+
+
+def _record(
+    tool_name: str,
+    outcome: str,
+    selection: dict[str, object],
+    arguments: dict[str, object],
+    *,
+    risk_tier: str | None = "safe",
+    seconds: int = 0,
+) -> AuditRecord:
+    return AuditRecord(
+        timestamp=datetime(2026, 8, 3, 9, 14, seconds, tzinfo=timezone.utc),
+        tool_name=tool_name,
+        sanitized_arguments=arguments,
+        selection_state=selection,
+        risk_tier=risk_tier,
+        outcome=outcome,
+        duration=0.125,
+        session_degraded=False,
+    )
+
+
+def hostile_audit_records() -> list[AuditRecord]:
+    """Three records, each carrying a different reason redaction is hard.
+
+      1. THE HISTORICAL PROJECT — fully selected, and NOT the current
+         selection. This is the record that discriminates key-based redaction
+         from known-value matching: a matcher built from the live chain never
+         sees ``kestrel-radar-v7``. Its variation carries dimensions, which is
+         geometry rather than identity.
+      2. THE CALLER-CONTROLLED TOOL NAME — an ``unknown_capability`` dispatch,
+         where the broker records the name it was handed verbatim and that name
+         identifies a customer. ``risk_tier`` is None, which the contract
+         requires for this outcome.
+      3. THE COLLIDING NAME — a design legitimately named ``ok``. It exists to
+         show that a known-value matcher would not merely be incomplete but
+         would rewrite that substring throughout, corrupting the ``outcome``
+         field of every record in the log.
+    """
+    return [
+        _record(
+            "select",
+            "ok",
+            {
+                "process_id": 8842,
+                "project": {
+                    "name": "kestrel-radar-v7",
+                    "path": (
+                        r"D:\clients\northwind-defence\kestrel"
+                        r"\kestrel-radar-v7.aedt"
+                    ),
+                },
+                "design": "PhasedArray_Tile",
+                "solution_type": "DrivenModal",
+                "setup": "Setup1",
+                "sweep": "Sweep1",
+                "variation": {
+                    "values": {"element_pitch_mm": "12.5", "substrate_h_mm": "0.79"},
+                    "variation_hash": "sha256:kestrelvariation",
+                },
+            },
+            {"stage": "project", "choice": "kestrel-radar-v7"},
+            seconds=1,
+        ),
+        _record(
+            "export_northwind_q3_report",
+            "unknown_capability",
+            dict.fromkeys(
+                (
+                    "process_id",
+                    "project",
+                    "design",
+                    "solution_type",
+                    "setup",
+                    "sweep",
+                    "variation",
+                )
+            ),
+            {},
+            risk_tier=None,
+            seconds=2,
+        ),
+        _record(
+            "select",
+            "ok",
+            {
+                "process_id": 8842,
+                "project": {
+                    "name": "bluefin-antenna",
+                    "path": r"E:\proj\bluefin\bluefin-antenna.aedt",
+                },
+                "design": "ok",
+                "solution_type": "DrivenTerminal",
+                "setup": None,
+                "sweep": None,
+                "variation": None,
+            },
+            {"stage": "design", "choice": "ok"},
+            seconds=3,
+        ),
+    ]
