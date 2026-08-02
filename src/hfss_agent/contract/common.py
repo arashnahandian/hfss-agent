@@ -33,9 +33,22 @@ UntrustedStr = str
 # to a schema under ``extra="forbid"``; both are breaking for a producer or an
 # exhaustive consumer, regardless of how few of either exist today. The two
 # version spaces move INDEPENDENTLY and are never synchronised — seeing
-# ``snapshot-2.0.0`` beside package version ``0.2.0`` is correct, not drift, and
+# ``snapshot-2.0.0`` beside package version ``0.3.0`` is correct, not drift, and
 # "fixing" either to match the other would destroy the ability to say which
 # schema surface produced a given record.
+#
+# The 0.2.0 -> 0.3.0 bump at Step 2.4a is itself the worked example: that
+# amendment retyped ``PreflightReport.environment`` and added a required field
+# to ``ComponentCheck``, both breaking for a producer, so the PACKAGE version
+# moved. ``CONTRACT_VERSION`` did not, and the rule for why is worth stating
+# once here rather than re-derived per amendment: it moves if and only if the
+# change touches a type reachable from ``DesignSnapshot`` or ``Finding`` — the
+# two artifacts crossing ``evaluate()`` — or a type carrying a
+# ``contract_version`` field of its own (today ``DesignSnapshot``,
+# ``ProvenanceRecord``, ``InspectionProvenance``, ``NativeValidationProvenance``).
+# The first clause protects the engine from a surface it cannot see changing
+# under it; the second protects a stamped record from claiming a schema version
+# whose shape it no longer has. 2.4a's new types satisfy neither clause.
 CONTRACT_VERSION = "snapshot-2.0.0"
 
 # --- Enumerated value sets fixed verbatim by System Design §2 ----------------
