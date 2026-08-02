@@ -102,8 +102,17 @@ SolveHealthResult = SolveHealthReport | CannotEvaluate
 
 
 # --- export_results ----------------------------------------------------------
-# Response is the shared ExportResult (contract.tool_io.common), whose three
-# arms are written / refused-existing-path / cannot_evaluate.
+# Response is the shared ExportResult (contract.tool_io.common), whose FOUR arms
+# are ExportWritten / ExportRefused / ExportFailed / CannotEvaluate.
+#
+# This comment said "three arms ... written / refused-existing-path /
+# cannot_evaluate" until Step 2.4a, and was stale twice over. ExportFailed did
+# not exist when it was written and the first contract amendment added it —
+# without that arm there is no way to say a write BROKE mid-operation, possibly
+# leaving an orphaned temp, as opposed to being refused before the disk was
+# touched. And "refused-existing-path" named one of ExportRefused's three
+# remedies as though it were the whole arm; the other two, refused_invalid_path
+# and refused_network_path, send the caller somewhere completely different.
 
 
 class ExportResultsRequest(StrictModel):

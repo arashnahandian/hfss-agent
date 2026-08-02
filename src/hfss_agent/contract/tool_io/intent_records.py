@@ -7,8 +7,17 @@ so, unlike the adapter-backed tools, their responses have NO CannotEvaluate arm:
 a broker file error is a typed *file* error, not a PyAEDT cannot_evaluate, and
 offering the arm would misattribute the failure. export_diagnostics_bundle is
 the one exception here: it is an export tool that gathers adapter-sourced
-diagnostics, so it returns the shared ExportResult whose third arm IS
+diagnostics, so it returns the shared ExportResult, one of whose FOUR arms is
 CannotEvaluate.
+
+Those four arms are ExportWritten, ExportRefused, ExportFailed and
+CannotEvaluate. This paragraph said "three-armed" and named CannotEvaluate as
+"the third arm" until Step 2.4a corrected it: ExportFailed was added by the
+first contract amendment and two docstrings were not updated with it. The count
+matters here rather than being pedantry — the missing arm is precisely the one
+distinguishing a write REFUSED before the disk was touched from one that BROKE
+mid-operation and may have left an orphaned temp behind, and a reader who
+believes there are three arms will not look for that distinction.
 """
 
 from datetime import datetime
