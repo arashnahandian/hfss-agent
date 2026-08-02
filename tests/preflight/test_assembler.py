@@ -11,10 +11,12 @@ from preflight_helpers import (
     attached_broker,
     detached_broker,
     fixture_probes,
+    lost_broker,
     root_names,
 )
 from pydantic import ValidationError
 
+from hfss_agent.broker import NoAttachedSessionError
 from hfss_agent.contract.tool_io import ComponentCheck
 from hfss_agent.preflight import COMPONENT_ORDER, preflight_environment
 from hfss_agent.preflight import assembler as assembler_module
@@ -213,6 +215,40 @@ def test_an_attached_broker_reads_the_session() -> None:
     assert report.environment.aedt_version == "2024.2"
     assert report.environment.aedt_version_source == "attached_session"
     assert "installed-version scan" not in report.template_text
+
+
+def test_a_lost_session_does_not_report_attached_session() -> None:
+    """THE THIRD DETACHED SHAPE, and the only one that was not obviously safe.
+
+    A never-attached session plainly has no environment. This one HAD one: it
+    attached, read AEDT 2026.1 from the process, and then the link dropped. If
+    that environment survived the transition, ``require_environment`` would
+    return a dead process's versions, and preflight would report
+    ``aedt_version_source="attached_session"`` for a session that no longer
+    exists — a version attributed to a process that may since have been
+    relaunched at a different one.
+
+    ADR-22 decision 10 says the environment clears on LOST and is deliberately
+    not carried forward alongside ``last_process_id``. That is a claim in a
+    document about code, so this pins the MECHANISM: the session is driven to
+    LOST through a real adapter fault, and the assertion is on what preflight
+    actually reports afterwards.
+
+    The scan sees a version the session never did, so the two sources are
+    distinguishable in the result: reporting 2021.2 from the scan is the pass,
+    and 2026.1 from the dead session would be the failure.
+    """
+    broker, _, session = lost_broker()
+    assert session.get_environment() is None
+    with pytest.raises(NoAttachedSessionError):
+        broker.require_environment()
+
+    report = preflight_environment(
+        fixture_probes(aedt=root_names("2021.2")), broker
+    )
+    assert report.environment.aedt_version_source == "installed_scan"
+    assert report.environment.aedt_version == "2021.2"
+    assert "read from the attached session" not in report.template_text
 
 
 def test_preflight_writes_no_audit_record() -> None:

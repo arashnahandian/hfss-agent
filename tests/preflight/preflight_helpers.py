@@ -19,7 +19,9 @@ from __future__ import annotations
 from collections.abc import Collection
 from datetime import datetime, timezone
 
+from hfss_agent.adapter import AdapterDisconnect
 from hfss_agent.adapter.fake import FakeAdapter, Scenario
+from hfss_agent.adapter.fake.scenario import OpBehavior
 from hfss_agent.broker import (
     AuditLogWriter,
     Broker,
@@ -122,6 +124,25 @@ def detached_broker() -> tuple[Broker, RecordingSink]:
     """A broker whose session was never attached — the pre-attach state Journey
     1.0 actually runs in."""
     return _broker(Session(FakeAdapter()))
+
+
+def lost_broker() -> tuple[Broker, RecordingSink, Session]:
+    """A broker whose session ATTACHED and then went LOST.
+
+    The third detached shape, and the one that is not obviously safe: a
+    never-attached session plainly has no environment, while this one HAD one
+    and the question is whether it survived the transition. Driven through a
+    real fault rather than by setting state, so the transition under test is the
+    one production takes.
+    """
+    scenario = Scenario(
+        behavior={"select": OpBehavior(fault=AdapterDisconnect(detail="dropped"))}
+    )
+    session = Session(FakeAdapter(scenario))
+    session.attach(DEFAULT_PID)
+    broker, sink = _broker(session)
+    session.select("project", "patch_antenna")
+    return broker, sink, session
 
 
 # --- the hostile redaction fixture -------------------------------------------
