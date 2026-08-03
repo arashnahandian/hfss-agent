@@ -17,8 +17,10 @@ from hfss_agent.contract.common import (
     FindingClassification,
     FindingOutcome,
     FindingSource,
+    NativeValidationUnavailableReason,
     ReadStatus,
     RiskTier,
+    SolveDataUnavailableReason,
     StrictModel,
     ThresholdType,
     UntrustedStr,
@@ -32,9 +34,11 @@ from hfss_agent.contract.design_snapshot import (
     Inspection,
     InspectionSection,
     NativeValidation,
+    NativeValidationUnavailable,
     Project,
     Selection,
     SolutionExists,
+    SolveDataUnavailable,
     SolvedData,
     SolveState,
 )
@@ -68,6 +72,8 @@ __all__ = [
     "ThresholdType",
     "RiskTier",
     "AuditOutcome",
+    "SolveDataUnavailableReason",
+    "NativeValidationUnavailableReason",
     # DesignSnapshot sub-models
     "Environment",
     "Project",
@@ -80,6 +86,10 @@ __all__ = [
     "SolveState",
     "ComplexSample",
     "SolvedData",
+    # Absence arms: why a snapshot carries no solve data / no native validation
+    # (ADR-28). Two independent types, never a shared vocabulary.
+    "SolveDataUnavailable",
+    "NativeValidationUnavailable",
     # Finding sub-model
     "Applicability",
     # Provenance for a structural read, which has no solve behind it (ADR-20)
