@@ -111,10 +111,36 @@ def _parse_variation(variation_string: str) -> dict[str, str]:
 
 
 def _variation_hash(values: dict[str, str]) -> str:
-    # Local canonicalisation of the variation key. FLAGGED cross-module coupling:
-    # System Design §2 assigns the canonical variation hash to the W-8 snapshot
-    # module; this MUST be reconciled with that convention when W-8 lands so the
-    # two agree byte-for-byte. Deterministic sort keeps it stable meanwhile.
+    # THE CANONICAL VARIATION HASH. This is its one and only implementation.
+    #
+    # RESOLVED (ADR-29, Step 2.5b). The comment that stood here from Step 1.2
+    # flagged a cross-module coupling: System Design §2 assigned the canonical
+    # hash to the W-8 snapshot module, and said this "MUST be reconciled with
+    # that convention when W-8 lands so the two agree byte-for-byte". W-8 has
+    # landed, and the reconciliation is that there was never a second
+    # implementation to reconcile WITH — §2's assignment is what was wrong, and
+    # it is being corrected.
+    #
+    # WHY OWNERSHIP STAYS HERE. Two constraints, either of which alone decides
+    # it. W-8 imports ``contract`` ONLY (ADR-28), so it cannot reach this
+    # function or any other adapter code. And the ``Variation`` must exist at
+    # select / list_options time — it is a field on ``SelectionChain`` and so on
+    # every ``SessionStatus`` — which is long before any snapshot is assembled;
+    # a hash minted by W-8 would arrive too late for the session that has
+    # already published one.
+    #
+    # SO W-8 RECEIVES THIS VALUE AS DATA AND COMPUTES NO HASH AT ALL. It does not
+    # recompute-and-compare either, and that was decided on measurement rather
+    # than taste: ``_resolve_variation`` below carries an unparseable variation
+    # token through AS the hash, so a comparison would fire on legitimate data.
+    #
+    # CHANGING THE CANONICALIZATION RE-KEYS EVERY VARIATION IN THE PRODUCT, and
+    # the three ways to do it by accident are dropping ``sort_keys``, letting
+    # ``json.dumps`` use its default separators, and changing the encoding. All
+    # three are pinned by golden vectors in tests/adapter/test_variation_hash.py,
+    # which records six one-line-different canonicalizations producing six
+    # different digests. Deterministic sort keeps it stable across insertion
+    # orders.
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
