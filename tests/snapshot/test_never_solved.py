@@ -251,20 +251,16 @@ def test_no_convergence_status_appears_anywhere_in_the_dumped_tree() -> None:
         assert "stopped" not in rendered
 
 
-def test_the_solved_arm_would_carry_one_which_is_why_the_check_is_meaningful() -> None:
-    """A control on the assertion above: it must be capable of failing.
-
-    A snapshot whose ``solve_state`` IS a ``SolveState`` does carry a convergence
-    status, and the same check finds it. Without this, "convergence_status not in
-    the tree" could be passing because the string never appears in any snapshot.
-    """
+def _solved(convergence_status: str) -> DesignSnapshot:
+    """A snapshot whose ``solve_state`` IS a ``SolveState``, carrying the given
+    status — the shape the never-solved assertion above must be able to catch."""
     from datetime import datetime, timezone
 
     from snapshot_helpers import variation
 
     from hfss_agent.contract import FreshnessEvidence, SolutionExists
 
-    solved = assemble_snapshot(
+    return assemble_snapshot(
         inspection=inspection_result(),
         native_validation=native_block([]),
         solve_state=SolveState(
@@ -278,7 +274,7 @@ def test_the_solved_arm_would_carry_one_which_is_why_the_check_is_meaningful() -
             ],
             adaptive_pass_history=[],
             delta_s_progression=[0.004],
-            convergence_status="converged",
+            convergence_status=convergence_status,  # type: ignore[arg-type]
             solve_timestamps={
                 "Setup1:Sweep1": datetime(2026, 8, 3, 8, 0, tzinfo=timezone.utc)
             },
@@ -291,9 +287,28 @@ def test_the_solved_arm_would_carry_one_which_is_why_the_check_is_meaningful() -
         selection=chain(),
         environment=environment(),
     )
-    rendered = str(solved.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize("status", ["converged", "stopped"])
+@pytest.mark.parametrize("mode", ["python", "json"])
+def test_the_solved_arm_would_carry_one_which_is_why_the_check_is_meaningful(
+    status: str, mode: str
+) -> None:
+    """A control on the assertion above: it must be capable of failing.
+
+    MATCHED TO THE ASSERTION IT CONTROLS, which it was not until Part 8. That
+    assertion loops BOTH dump modes and checks THREE strings —
+    ``convergence_status``, ``converged`` and ``stopped``; this control checked
+    one mode and two strings, so the ``"stopped"`` half had no proof it could
+    fail at all. ``ConvergenceStatus`` is a two-member Literal, so both members
+    get a snapshot and both dump modes get a pass.
+
+    Without this, "convergence_status not in the tree" could be passing because
+    the string never appears in any snapshot.
+    """
+    rendered = str(_solved(status).model_dump(mode=mode))  # type: ignore[arg-type]
     assert "convergence_status" in rendered
-    assert "converged" in rendered
+    assert status in rendered
 
 
 # --- 4. native validation is a real run, not the absence arm -----------------

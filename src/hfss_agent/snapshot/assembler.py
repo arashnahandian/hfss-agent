@@ -1,11 +1,24 @@
 """W-8 assembly: the ``DesignSnapshot`` builder (System Design §1.1, ADR-28).
 
 Layer 5 (§5): imports ``contract`` ONLY — the layer number reflects ASSEMBLY
-order, not imports (corrected ADR-28). W-8 EVALUATES NOTHING and CALLS NOTHING.
-It receives the upstream outputs as data and composes them; the composition
-itself — reading a session, dispatching through a broker, deciding what to read
-first — belongs to the server layer, which is the only place that can hold both
-a broker and this module.
+order, not imports (corrected ADR-28). W-8 EVALUATES NOTHING, AND CALLS NOTHING
+THAT REACHES HFSS, THE FILESYSTEM, THE NETWORK OR THE OS. It receives the
+upstream outputs as data and composes them; the composition itself — reading a
+session, dispatching through a broker, deciding what to read first — belongs to
+the server layer, which is the only place that can hold both a broker and this
+module.
+
+IT DOES CALL EXACTLY TWO HOST PRIMITIVES, and the claim above is qualified rather
+than left as a flat "calls nothing" because both are visible a few lines below
+it: ``datetime.now(timezone.utc)`` stamps ``created_at``, and ``uuid4().hex``
+mints ``snapshot_id``. Neither is an oversight. They read no user data, open no
+file, and return no fact about the machine, and the permission is recorded
+positively — with its reasoning and its own named test — in
+``tests/boundary/test_snapshot_import_audit.py`` (see
+``_CONSIDERED_AND_PERMITTED`` and
+``test_the_clock_and_the_id_source_are_considered_and_permitted``). ``uuid1``
+would be a different matter, because it embeds the MAC address; nothing here may
+use it.
 
 TAKES NO BROKER, AND THE REASON DIFFERS FROM W-7'S. W-7 also takes none, but for
 a correctness reason about gate provenance (see its module docstring); it is
@@ -361,6 +374,20 @@ def _selection(chain: SelectionChain) -> Selection:
     # checker is ever adopted, these two lines are where it will complain first;
     # the fix at that point is to build the kwargs through ``getattr`` (whose
     # ``Any`` return satisfies any checker) rather than to mute it here.
+    #
+    # THE TEST SUITE CARRIES SUPPRESSIONS AND THAT IS NOT A CONTRADICTION, noted
+    # here because a reader who takes the paragraph above as a repo-wide rule
+    # will find ~50 ``# type: ignore[arg-type]`` comments in this module's own
+    # tests and conclude one of the two positions must be wrong. Neither is. The
+    # argument above is about a suppression standing at the line that EXECUTES a
+    # decision, in source a stranger reads to learn what the rule IS — there,
+    # muting a checker nobody runs asserts a relationship with tooling that does
+    # not exist. The test comments are the opposite case: they sit on DELIBERATE
+    # type violations (passing ``object()`` where a union is declared, splatting
+    # a ``dict[str, object]`` into typed keyword parameters), where the ignore
+    # documents intent — "this wrong type is the point of the test". They are
+    # house style across every suite in this repo, they predate this module, and
+    # nothing here proposes changing them.
     project = chain.project
     variation = chain.variation
     return Selection(

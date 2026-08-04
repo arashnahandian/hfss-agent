@@ -24,8 +24,10 @@ them.
 
 from __future__ import annotations
 
+import ast
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from snapshot_helpers import (
@@ -58,6 +60,7 @@ from hfss_agent.contract.tool_io import (
     SelectionRefused,
 )
 from hfss_agent.snapshot import SnapshotAssemblyError, assemble_snapshot
+from hfss_agent.snapshot.assembler import _SNAPSHOT_ID_PREFIX
 
 # --- the refusal arms, built once ---------------------------------------------
 
@@ -379,14 +382,51 @@ def test_a_non_digest_variation_token_crosses_unchanged() -> None:
 def test_the_assembler_computes_no_digest() -> None:
     """Asserted structurally as well as behaviourally: no hashing primitive is
     reachable from this module at all, so there is no second canonicalization to
-    drift from the adapter's."""
+    drift from the adapter's.
+
+    THE IMPORT AUDIT DOES NOT COVER THIS, which is the reason this test survived
+    Part 8's cleanup. Measured, not assumed: adding ``import hashlib`` to the
+    assembler leaves all ten tests in
+    ``tests/boundary/test_snapshot_import_audit.py`` GREEN, and this is the only
+    assertion in the whole suite that fails. ``hashlib`` sits in the blind spot
+    both of that file's axes share — it is not an ``hfss_agent`` module, so the
+    allowed-roots check never considers it, and it reaches no file, socket,
+    environment or process, so it is not host-capable either. It is pure
+    computation, and pure computation is exactly what W-8 must not do here.
+
+    PARSED, NOT GREPPED, and that is Part 8's fix. This read the raw source text
+    for the substring ``"hashlib"`` until now, docstrings included — so the next
+    person to write a comment explaining why W-8 does not hash would have failed
+    it, and the honest fix would have looked like deleting the test. The AST sees
+    imports and calls; prose about hashing is now free to exist.
+    """
     from hfss_agent.snapshot import assembler
 
-    source = __import__("pathlib").Path(assembler.__file__).read_text(encoding="utf-8")
-    for primitive in ("hashlib", "sha256(", "md5(", "blake2"):
-        assert primitive not in source, (
-            f"{primitive!r} appears in the assembler; the canonical variation "
-            "hash is the adapter's and W-8 computes none"
+    tree = ast.parse(Path(assembler.__file__).read_text(encoding="utf-8"))
+
+    imported: set[str] = set()
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Call):
+            # Both spellings: ``sha256(...)`` and ``hashlib.sha256(...)``.
+            if isinstance(node.func, ast.Name):
+                called.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                called.add(node.func.attr)
+
+    for module in ("hashlib", "hmac", "zlib"):
+        assert module not in imported, (
+            f"the assembler imports {module!r}; the canonical variation hash is "
+            "the adapter's and W-8 computes none"
+        )
+    for primitive in ("sha256", "sha1", "sha512", "md5", "blake2b", "blake2s", "new"):
+        assert primitive not in called, (
+            f"the assembler calls {primitive!r}; the canonical variation hash is "
+            "the adapter's and W-8 computes none"
         )
 
 
@@ -394,10 +434,14 @@ def test_the_assembler_computes_no_digest() -> None:
 
 
 def test_the_snapshot_id_has_the_declared_form() -> None:
+    """The PREFIX comes from the assembler's own constant, the SHAPE is spelled
+    out here. ``_SNAPSHOT_ID_PREFIX`` exists so the form is stated in one place,
+    and a test restating ``"snap-"`` would make that claim false — the hex width
+    is a different matter, and is written independently on purpose."""
     snapshot = assemble_snapshot(**inputs())  # type: ignore[arg-type]
-    assert re.fullmatch(r"snap-[0-9a-f]{32}", snapshot.snapshot_id), (
-        f"unexpected snapshot_id form: {snapshot.snapshot_id!r}"
-    )
+    assert re.fullmatch(
+        re.escape(_SNAPSHOT_ID_PREFIX) + r"[0-9a-f]{32}", snapshot.snapshot_id
+    ), f"unexpected snapshot_id form: {snapshot.snapshot_id!r}"
 
 
 def test_two_assemblies_from_identical_inputs_get_different_ids() -> None:
@@ -420,7 +464,7 @@ def test_the_id_carries_no_host_fact() -> None:
     checking the RFC 4122 version nibble rather than by reading the source.
     """
     snapshot = assemble_snapshot(**inputs())  # type: ignore[arg-type]
-    assert snapshot.snapshot_id[len("snap-") :][12] == "4"
+    assert snapshot.snapshot_id[len(_SNAPSHOT_ID_PREFIX) :][12] == "4"
 
 
 # --- 9. created_at ------------------------------------------------------------

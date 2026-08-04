@@ -63,6 +63,7 @@ Measured against a real assembled snapshot: the leaf types are exactly
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -319,7 +320,7 @@ def test_no_leaf_is_a_str_subclass_or_an_enum() -> None:
     for leaf in _flatten(clean_snapshot().model_dump()):
         if isinstance(leaf, str):
             assert type(leaf) is str, f"str subclass in the tree: {type(leaf)}"
-        assert not isinstance(leaf, __import__("enum").Enum)
+        assert not isinstance(leaf, Enum)
 
 
 def _flatten(node: Any) -> list[Any]:

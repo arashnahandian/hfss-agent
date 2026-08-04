@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from hfss_agent.contract import (
+    CONTRACT_VERSION,
     ComplexSample,
     Environment,
     InspectionProvenance,
@@ -113,7 +114,7 @@ def inspection_result(
             project=PROJECT_NAME,
             design=DESIGN,
             read_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
-            contract_version="snapshot-3.0.0",
+            contract_version=CONTRACT_VERSION,
             wrapper_version="0.0.0",
             read_under_aedt_version="2026.1",
         ),
@@ -128,7 +129,7 @@ def native_block(raw_output: list[str] | None = None) -> NativeValidationBlock:
             project=PROJECT_NAME,
             design=DESIGN,
             validated_at=datetime(2026, 8, 3, 9, 30, tzinfo=timezone.utc),
-            contract_version="snapshot-3.0.0",
+            contract_version=CONTRACT_VERSION,
             wrapper_version="0.0.0",
             validated_under_aedt_version="2026.1",
         ),
