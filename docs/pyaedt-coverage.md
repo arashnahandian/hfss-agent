@@ -59,6 +59,11 @@ Deliberate, approved gaps — PyAEDT does not expose these cleanly, so the adapt
 returns a typed outcome naming the specific limitation rather than guessing or
 fabricating. All `mock-only`:
 
+> These refusals are the source of `contract.SolveDataUnavailableReason` /
+> `NativeValidationUnavailableReason` (ADR-28), and nothing links the two
+> mechanically — `contract` may not import `adapter`, so the anti-rot test pins
+> each member against a *documented* table of these strings; edit both together.
+
 - **`read_solve_state`** returns `AdapterCannotEvaluate` when per-pass
   convergence history / convergence status is unavailable, and (separately) when
   a solve-completion timestamp is unavailable — each with a specific limitation
