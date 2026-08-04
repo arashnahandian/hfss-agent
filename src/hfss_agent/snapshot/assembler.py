@@ -86,6 +86,56 @@ data — a design whose variation string is "nominal" has ``values={}`` and
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from hfss_agent.contract import (
+    CONTRACT_VERSION,
+    DesignSnapshot,
+    Environment,
+    Inspection,
+    IntentObject,
+    NativeValidation,
+    NativeValidationUnavailable,
+    Selection,
+    SolveDataUnavailable,
+    SolvedData,
+    SolveState,
+)
+from hfss_agent.contract.tool_io import (
+    CannotEvaluate,
+    InspectDesignResult,
+    InspectionResult,
+    NativeValidationBlock,
+    SelectionChain,
+    SelectionRefused,
+)
+
+# ``snapshot_id``'s prefix. Named once so the form is stated in one place rather
+# than living inside an f-string; see the module docstring for why the id
+# identifies a capture event rather than a design state.
+_SNAPSHOT_ID_PREFIX = "snap-"
+
+# The seven stages ``Selection`` requires, DERIVED from the contract and never
+# retyped, following W-5's ``_CANONICAL_ORDER`` precedent. ``SelectionChain``
+# declares the same seven names with every one optional, which is what makes a
+# single ``getattr`` loop able to check both shapes at once; a test asserts the
+# two field-name sets are equal, so a contract change surfaces there rather than
+# as an AttributeError at assembly time.
+_REQUIRED_STAGES: tuple[str, ...] = tuple(Selection.model_fields)
+
+# The eight sections ``Inspection`` requires, DERIVED from the type being
+# constructed rather than from ``InspectionSectionName``. Both are contract, and
+# either would work; this one is the more direct statement, because it is
+# literally the set of keys the constructor needs.
+_REQUIRED_SECTIONS: tuple[str, ...] = tuple(Inspection.model_fields)
+
+# The two union-typed inputs, named for the refusal message so it can say WHICH
+# input refused without interpolating anything read from HFSS. See
+# ``_refusal_error`` for why the message names the field and never its content.
+_INSPECTION_INPUT = "inspection"
+_NATIVE_VALIDATION_INPUT = "native_validation"
+
 
 class SnapshotAssemblyError(Exception):
     """Assembly could not complete honestly, so no snapshot is emitted.
@@ -140,3 +190,259 @@ class SnapshotAssemblyError(Exception):
     four may legally import. Today there is none, and the count is now four
     rather than three because W-8 removed the only candidate that was left.
     """
+
+
+def assemble_snapshot(
+    inspection: InspectDesignResult,
+    native_validation: (
+        NativeValidationBlock
+        | NativeValidationUnavailable
+        | CannotEvaluate
+        | SelectionRefused
+    ),
+    solve_state: SolveState | SolveDataUnavailable,
+    solved_data: SolvedData | SolveDataUnavailable,
+    selection: SelectionChain,
+    environment: Environment,
+    intent: IntentObject | None = None,
+) -> DesignSnapshot:
+    """Compose one ``DesignSnapshot`` from inputs a caller already holds.
+
+    Positional parameters with the optional one defaulted last, following
+    ``inspect_design``, ``validate_native`` and ``compute_metrics`` — none of the
+    three uses a keyword-only marker, and introducing one here would make W-8 the
+    odd assembler for no gain.
+
+    THE PARAMETER TYPES ARE A HYBRID, AND THE SPLIT IS FORCED RATHER THAN CHOSEN.
+    ``inspection`` and ``native_validation`` arrive as the UNIONS their producers
+    return, refusal arms included, because ADR-28 decision 8 puts the "no
+    snapshot" decision here and those arms are ``contract.tool_io`` types this
+    module may legally name. ``solve_state`` and ``solved_data`` cannot arrive
+    that way: their refusal type is ``AdapterCannotEvaluate``, which lives in
+    ``hfss_agent.adapter`` and is unreachable from a contract-only module — so
+    they arrive already mapped onto the contract's own absence arm. That mapping
+    (an adapter refusal reason onto ``SolveDataUnavailableReason``) belongs to
+    the caller and is deliberately not built here.
+
+    ``native_validation`` ACCEPTS ``NativeValidationUnavailable`` FOR THE SAME
+    REASON, which is a small widening of "the two unions" worth stating: ADR-28
+    gave that field an absence arm, and if the only inputs were W-6's three
+    return arms the arm would have no path into a snapshot at all. Accepting the
+    already-mapped value is exactly what ``solve_state`` does; it is not the
+    mapping itself, which stays the caller's.
+
+    Args:
+        inspection: W-5's result. An ``InspectionResult`` must carry all eight
+            sections — see ``_inspection``.
+        native_validation: W-6's result, or the contract absence arm.
+        solve_state: the solve-state block, or why there is none.
+        solved_data: the S-parameter series, or why there is none.
+        selection: the session's chain, narrowed here to the snapshot's
+            seven-stage ``Selection`` — see ``_selection`` for what is dropped.
+        environment: the attached session's four version strings.
+        intent: the optional design intent; ``None`` is an honest value, not a
+            missing one, and is the field's own default.
+
+    Returns:
+        A ``DesignSnapshot``. There is no failure arm — see
+        ``SnapshotAssemblyError``.
+
+    Raises:
+        SnapshotAssemblyError: a refusal arm was supplied, the selection chain
+            was incomplete, or the inspection did not carry all eight sections.
+    """
+    narrowed_selection = _selection(selection)
+    narrowed_inspection = _inspection(inspection)
+    narrowed_native = _native_validation(native_validation)
+    # STAMPED HERE, after every narrowing has passed and immediately before
+    # construction, which is the instant this field actually describes (see the
+    # module docstring). Stamping earlier would put a time on an artifact that
+    # may still be refused; stamping it inline in the call below would leave the
+    # order of argument evaluation deciding what "assembled" means.
+    created_at = datetime.now(timezone.utc)
+    return DesignSnapshot(
+        # IMPORTED, NEVER RESTATED. Every site in this package takes the
+        # constant so an accidental edit to its value is one loud diff rather
+        # than a literal that silently disagrees with the schema it labels.
+        contract_version=CONTRACT_VERSION,
+        created_at=created_at,
+        snapshot_id=_SNAPSHOT_ID_PREFIX + uuid4().hex,
+        environment=environment,
+        selection=narrowed_selection,
+        inspection=narrowed_inspection,
+        native_validation=narrowed_native,
+        # PASSED THROUGH UNTOUCHED, both arms. A ``SolveDataUnavailable`` is
+        # already the honest artifact for "there is none"; re-wrapping it would
+        # add wrapper text over a reason the adapter already worded correctly.
+        solve_state=solve_state,
+        solved_data=solved_data,
+        intent=intent,
+    )
+
+
+def _selection(chain: SelectionChain) -> Selection:
+    """Narrow the session's partial chain onto the snapshot's complete one.
+
+    WHAT THIS DROPS: the project's absolute filesystem PATH, and that is the
+    whole reason this function is a named site rather than a dict copy.
+
+    ADR-28 decided the path stays on ``SelectionChain`` and never reaches the
+    block that crosses into the engine, because a default AEDT project lives
+    under ``%USERPROFILE%\\Documents\\Ansoft`` — so the path routinely carries
+    the operator's Windows account name into the one artifact that leaves this
+    machine. Nothing downstream of the snapshot has any use for it. The session
+    keeps its copy (it compares the path to detect a project that moved between
+    a read and a re-verification) and so does the audit log; what is dropped is
+    only the copy that would have travelled.
+
+    THE TYPE SYSTEM CATCHES THE CLUMSY VERSION OF THIS MISTAKE AND NOT THE REAL
+    ONE, which is why the drop is asserted by a test rather than trusted to
+    pydantic. ``Selection.project`` is an ``UntrustedStr``, so passing the whole
+    ``Project`` raises a ``string_type`` ``ValidationError`` — but passing
+    ``chain.project.path`` is a perfectly valid ``str`` and validates silently.
+    The plausible regression is the one pydantic cannot see.
+
+    A stage that is ``None`` raises: the chain is built stage by stage and reset
+    downstream on any change, so an absent stage means the snapshot would have to
+    invent one, and ADR-28 decision 8 fixes that a snapshot missing a selection
+    stage is no snapshot rather than a lesser one.
+    """
+    missing = [stage for stage in _REQUIRED_STAGES if getattr(chain, stage) is None]
+    if missing:
+        # Names the STAGES, never their values — see ``_refusal_error``. The
+        # stage names are this package's own field names, not anything read from
+        # HFSS.
+        raise SnapshotAssemblyError(
+            "the selection chain does not name a "
+            f"{', '.join(missing)}, so the snapshot's selection block cannot be "
+            "completed without inventing one. No snapshot is assembled: a "
+            "selection stage that was never chosen has no truthful value to "
+            "substitute, and a snapshot missing one is not a lesser snapshot."
+        )
+    # ``missing`` being empty is what guarantees the two shaped stages below are
+    # not None; re-checking them here would add a branch no input can reach.
+    project = chain.project
+    variation = chain.variation
+    return Selection(
+        process_id=chain.process_id,
+        # THE PATH DROP. ``chain.project`` is a ``Project`` carrying name AND
+        # path; only the name continues. This single expression is the whole
+        # execution of ADR-28's decision — see this function's docstring.
+        project=project.name,  # type: ignore[union-attr]
+        design=chain.design,
+        solution_type=chain.solution_type,
+        setup=chain.setup,
+        sweep=chain.sweep,
+        # PROPAGATED BYTE-FOR-BYTE, hash included. W-8 computes no hash: the
+        # canonical variation hash is the adapter's, and an unparseable variation
+        # token is carried through AS the hash by ``_resolve_variation``, so a
+        # value here is not always a digest and must not be treated as one.
+        variation=variation,  # type: ignore[arg-type]
+    )
+
+
+def _inspection(result: InspectDesignResult) -> Inspection:
+    """Narrow W-5's per-section dict onto the snapshot's complete eight.
+
+    WHAT THIS DROPS: nothing, on the success path — and that is the point. A
+    subset is REFUSED rather than padded, because ``Inspection`` deliberately has
+    no absence arm (ADR-28): its partial failures are already carried section by
+    section as ``read_status`` and ``limitation``, which is finer-grained honesty
+    than an arm could give, and synthesizing a ninth state for "not requested"
+    would make an incomplete capture look like a complete one.
+
+    W-5's ``InspectionResult`` also carries ``provenance`` and ``template_text``,
+    and both are dropped: the snapshot has no field for either, the provenance
+    describes W-5's read rather than this composition, and ``template_text`` is a
+    rendering for a tool response rather than data for the engine.
+    """
+    if isinstance(result, (CannotEvaluate, SelectionRefused)):
+        raise _refusal_error(_INSPECTION_INPUT, result)
+    if not isinstance(result, InspectionResult):
+        raise SnapshotAssemblyError(
+            f"the {_INSPECTION_INPUT} input was a {type(result).__name__}, which "
+            "is not a type this parameter is declared to accept. No snapshot is "
+            "assembled: this is a wiring problem, and composing around a value "
+            "of unknown meaning would hide it inside a valid-looking artifact."
+        )
+    absent = [name for name in _REQUIRED_SECTIONS if name not in result.sections]
+    if absent:
+        raise SnapshotAssemblyError(
+            f"the inspection carries {len(result.sections)} of "
+            f"{len(_REQUIRED_SECTIONS)} sections and is missing "
+            f"{', '.join(absent)}. No snapshot is assembled: the snapshot's "
+            "inspection block requires all eight and has no absence arm, so a "
+            "subset would have to be padded with a section nobody looked at."
+        )
+    return Inspection(**{name: result.sections[name] for name in _REQUIRED_SECTIONS})
+
+
+def _native_validation(
+    block: (
+        NativeValidationBlock
+        | NativeValidationUnavailable
+        | CannotEvaluate
+        | SelectionRefused
+    ),
+) -> NativeValidation | NativeValidationUnavailable:
+    """Take W-6's messages out of their block, or pass the absence arm through.
+
+    WHAT THIS DROPS: ``NativeValidationBlock.provenance``, deliberately and with
+    nothing lost. That stamp records the project, design, instant and AEDT
+    version of ONE validation run, which is W-6's honest receipt for its own tool
+    response — and the snapshot has no field to put it in. It carries no
+    ``snapshot_id`` and could not: W-6 emits no snapshot, and W-8 is what mints
+    that id, so the two records describe different events. The messages
+    themselves cross unchanged, which is the part the engine is owed.
+
+    ``NativeValidation`` is reused UNMODIFIED across the seam — the same type the
+    adapter returned, the same object W-6 held — so there is no re-shaping step
+    here that could misrepresent anything.
+    """
+    if isinstance(block, (CannotEvaluate, SelectionRefused)):
+        raise _refusal_error(_NATIVE_VALIDATION_INPUT, block)
+    if isinstance(block, NativeValidationUnavailable):
+        # The already-mapped absence arm, passed through untouched for the reason
+        # ``solve_state`` is: it is already the honest artifact.
+        return block
+    if not isinstance(block, NativeValidationBlock):
+        raise SnapshotAssemblyError(
+            f"the {_NATIVE_VALIDATION_INPUT} input was a "
+            f"{type(block).__name__}, which is not a type this parameter is "
+            "declared to accept. No snapshot is assembled: this is a wiring "
+            "problem, and composing around a value of unknown meaning would hide "
+            "it inside a valid-looking artifact."
+        )
+    return block.validation
+
+
+def _refusal_error(
+    field: str, refusal: CannotEvaluate | SelectionRefused
+) -> SnapshotAssemblyError:
+    """The error for a refusal arm supplied where a payload was required.
+
+    NAMES THE FIELD AND THE ARM'S TYPE, NEVER THE ARM'S CONTENT, and the omission
+    is deliberate. ``CannotEvaluate`` and ``SelectionRefused`` each carry
+    ``reason``, ``limitation`` and ``template_text``, and those strings can
+    interpolate values read from HFSS — a setup name, a sweep's unit token. An
+    exception message is a line-oriented renderer like any other, so this follows
+    the precedent W-5 sets at its own provenance-failure site: when an untrusted
+    name is in hand, it names the FIELD that is missing and not the value it
+    would have held. (W-7 is the one sibling that does interpolate an
+    adapter-sourced value — the S-parameter key list, under ``!r`` — because
+    there the unexpected key IS the diagnostic. Here it is not: the caller still
+    holds the refusal object with every field intact.)
+
+    ``outcome`` IS INTERPOLATED, and it is not an exception to the rule above: it
+    is a closed ``Literal`` on both types, so its value is one of four
+    wrapper-authored tags and cannot carry text from anywhere else. It is what
+    makes the four refusal cases distinguishable from the message alone.
+    """
+    return SnapshotAssemblyError(
+        f"a refusal arm was supplied as the {field} input: a "
+        f"{type(refusal).__name__} tagged {refusal.outcome!r}. No snapshot is "
+        "assembled. A refusal means the upstream step declined before it "
+        "produced anything, so there is no payload to compose and no absence arm "
+        "on this field to carry one — the refusal itself is the result, and the "
+        "caller still holds it with every field intact."
+    )

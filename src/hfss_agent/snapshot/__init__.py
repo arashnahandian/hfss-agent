@@ -18,8 +18,9 @@ design state, and why the variation hash is received as data and never computed
 here.
 """
 
-from hfss_agent.snapshot.assembler import SnapshotAssemblyError
+from hfss_agent.snapshot.assembler import SnapshotAssemblyError, assemble_snapshot
 
 __all__ = [
+    "assemble_snapshot",
     "SnapshotAssemblyError",
 ]
