@@ -225,3 +225,50 @@ disagreement is known and was chosen:
   been exercised against a real session because no real session has run. Record
   the exact string a live attach yields, and whether it is ever anything other
   than `year.release`.
+
+### Variation-string parsing and the canonical hash (Step 2.5b — `mock-only`)
+
+Introduced with the snapshot module (W-8), which propagates a `Variation` but
+mints none. `RealAdapter._resolve_variation` builds every `Variation` in the
+product by handing the variation string PyAEDT reports to `_parse_variation`,
+which splits on whitespace and reads `name=value` pairs with optional quotes —
+so **the shape `w='2mm' h='1.6mm'` is an assumption about what PyAEDT emits, not
+a guarantee this package makes.** It has never met a live AEDT session.
+
+The assumption is load-bearing twice over. `_variation_hash` keys a point in the
+design space by hashing the parsed *map*, and `Selection.variation` carries that
+key into every snapshot that crosses the wrapper→engine seam — so a variation
+parsed into the wrong map is keyed wrongly everywhere downstream, silently. The
+parser degrades rather than raising: a string it cannot read yields `{}`, and
+`_resolve_variation` then carries the raw token through **as** the
+`variation_hash` rather than hashing the empty map, because hashing `{}` would
+give every unreadable variation the same key and merge distinct design points.
+That degradation is the honest behaviour and is pinned by
+`tests/adapter/test_variation_hash.py`; what is not pinned is whether it ever
+needs to fire.
+
+**The pinned digests do not cover this.** `test_variation_hash.py` pins the
+canonicalization byte-for-byte — golden vectors, seven near-miss variants, and a
+non-ASCII vector holding `ensure_ascii` — but every one of them is computed over
+a map supplied directly by the test. If `_parse_variation` builds the wrong map
+from a real variation string, **those digests remain correct for maps that are
+themselves wrong**, and nothing in CI can tell the difference.
+
+A live pass should record:
+
+- **The exact variation string** `list_options("variation")` and the selection
+  path return for a parametric design — whether it is `w='2mm' h='1.6mm'`, uses
+  different quoting or separators, or carries units, expressions or derived
+  variables the `name=value` split does not survive.
+- **What a nominal (unparametrised) design reports.** The `""` / `"nominal"` /
+  `"Nominal Variation"` tokens are handled as unparseable-and-carried-through on
+  the strength of documentation only; confirm which one a real session emits.
+- **Whether non-ASCII variable names occur** (`width_µm`, `Ω_port`). They are
+  legal in HFSS and the canonicalization pins `ensure_ascii` because of it, but
+  no real design has been observed carrying one.
+
+If the real shape differs, the parse is what must be fixed — not the
+canonicalization, which is correct for whatever map it is given. Re-key nothing
+without a contract event: `variation_hash` is a stable handle already published
+in `SessionStatus`, and changing how a map is *built* changes every key just as
+surely as changing how it is hashed. Record the confirmed shape here.

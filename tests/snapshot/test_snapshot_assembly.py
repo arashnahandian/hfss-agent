@@ -450,12 +450,50 @@ def test_created_at_is_stamped_at_assembly_not_taken_from_an_input() -> None:
     assert snapshot.created_at != datetime(2026, 8, 3, 9, 30, tzinfo=timezone.utc)
 
 
-def test_a_refused_assembly_stamps_nothing() -> None:
-    """The stamp is taken after every narrowing passes, so a refusal never puts a
-    time on an artifact that was not produced. Asserted by observing that the
-    refusal path raises rather than returning a partially-built object."""
+def test_a_refused_assembly_never_reads_the_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE STAMP ORDERING, OBSERVED RATHER THAN ASSUMED.
+
+    Until Part 7 this test was named ``test_a_refused_assembly_stamps_nothing``
+    and its whole body was ``pytest.raises(SnapshotAssemblyError)`` — which is
+    true of every refusal test in this file and says nothing about WHEN the
+    stamp is taken. Moving ``created_at = datetime.now(...)`` to the top of
+    ``assemble_snapshot`` left it green, so the one regression it was named for
+    was the one it could not see.
+
+    With no injectable clock, the observable is the clock CALL itself. Patching
+    the module-level ``datetime`` name the assembler imported follows the
+    precedent in ``tests/preflight/test_assembler.py``, which patches
+    ``assembler_module._aedt_check`` the same way.
+
+    What this pins: a refusal must not put a time on an artifact that was never
+    produced, and the assembler must not take one speculatively "in case" it
+    succeeds. Both halves are here — the refusal path reads no clock, and the
+    success path reads exactly one.
+    """
+    from hfss_agent.snapshot import assembler
+
+    calls: list[object] = []
+
+    class RecordingDatetime:
+        @staticmethod
+        def now(tz: object) -> datetime:
+            calls.append(tz)
+            return datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(assembler, "datetime", RecordingDatetime)
+
     with pytest.raises(SnapshotAssemblyError):
         assemble_snapshot(**inputs(selection=SelectionChain()))  # type: ignore[arg-type]
+    assert calls == [], "a refused assembly read the clock before it refused"
+
+    # The control: the same patched clock, a complete input set, one read. Both
+    # in one test so neither half can be deleted alone — without the success
+    # case, a ``datetime`` the assembler never called at all would pass.
+    snapshot = assemble_snapshot(**inputs())  # type: ignore[arg-type]
+    assert len(calls) == 1
+    assert snapshot.created_at == datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
 
 
 # --- 10. the artifact survives the seam ---------------------------------------
@@ -493,16 +531,23 @@ def test_both_absence_arms_round_trip_as_their_own_types() -> None:
     assert "convergence_status" not in str(snapshot.model_dump(mode="json"))
 
 
-# --- 11. the three reasons are distinguishable, and none renames the work -----
+# --- 11. the four reasons are distinguishable, and none renames the work ------
 
-
-def _three_messages() -> dict[str, str]:
-    """One message per raise reason, collected through the real entry point."""
+# EVERY MESSAGE THAT CAN REACH A CALLER, not one per reason — the two union-typed
+# inputs each produce their own text for the refusal and wiring reasons, so four
+# REASONS yield six MESSAGES. The distinction matters twice below: the
+# distinguishability test is about reasons and groups these, while the
+# vocabulary test is about what a caller can be shown and must see all six.
+def _all_messages() -> dict[str, str]:
+    """Every distinct refusal message, collected through the real entry point."""
     messages: dict[str, str] = {}
     for label, kwargs in (
-        ("refusal", inputs(inspection=_cannot_evaluate())),
+        ("refusal_inspection", inputs(inspection=_cannot_evaluate())),
+        ("refusal_native", inputs(native_validation=_cannot_evaluate())),
         ("incomplete_chain", inputs(selection=chain(setup=None))),
         ("subset_inspection", inputs(inspection=inspection_result(ALL_SECTIONS[:7]))),
+        ("wiring_inspection", inputs(inspection=object())),
+        ("wiring_native", inputs(native_validation=object())),
     ):
         with pytest.raises(SnapshotAssemblyError) as caught:
             assemble_snapshot(**kwargs)  # type: ignore[arg-type]
@@ -510,19 +555,32 @@ def _three_messages() -> dict[str, str]:
     return messages
 
 
-def test_the_three_raise_reasons_are_distinguishable_from_the_message_alone() -> None:
-    messages = _three_messages()
-    assert len(set(messages.values())) == 3
-    assert "a refusal arm was supplied" in messages["refusal"]
-    assert "the selection chain does not name a" in messages["incomplete_chain"]
-    assert "sections and is missing" in messages["subset_inspection"]
-    # And each phrase identifies exactly one reason.
-    for phrase, owner in (
-        ("a refusal arm was supplied", "refusal"),
-        ("the selection chain does not name a", "incomplete_chain"),
-        ("sections and is missing", "subset_inspection"),
+def test_the_four_raise_reasons_are_distinguishable_from_the_message_alone() -> None:
+    """FOUR REASONS, and the wiring guard is the fourth.
+
+    It was excluded from this property until Part 7, on the reading that a
+    wiring bug is a different category from a refusal. It is not: it raises the
+    same type, emits no snapshot, and reaches a caller exactly as the other
+    three do. What IS different is only that no correctly-typed caller can
+    reach it — which is a statement about who sees the message, not about
+    whether it must be legible when they do.
+    """
+    messages = _all_messages()
+    # Six distinct texts: the two union inputs each name themselves.
+    assert len(set(messages.values())) == 6
+    # And each phrase identifies exactly one REASON — one label for the two
+    # single-site reasons, two for the two that either union input can raise.
+    for phrase, owners in (
+        ("a refusal arm was supplied", ["refusal_inspection", "refusal_native"]),
+        ("the selection chain does not name a", ["incomplete_chain"]),
+        ("sections and is missing", ["subset_inspection"]),
+        (
+            "is not a type this parameter is declared to accept",
+            ["wiring_inspection", "wiring_native"],
+        ),
     ):
-        assert [label for label, text in messages.items() if phrase in text] == [owner]
+        found = sorted(label for label, text in messages.items() if phrase in text)
+        assert found == sorted(owners), f"{phrase!r} identified {found}"
 
 
 def test_no_message_calls_the_composition_a_read_or_a_run() -> None:
@@ -530,8 +588,13 @@ def test_no_message_calls_the_composition_a_read_or_a_run() -> None:
     word for something no adapter call happened for, and "run" would borrow
     W-6's; a message that misnames the work sends a maintainer to the wrong
     module. Every message says "no snapshot is assembled" instead.
+
+    Covers all SIX reachable messages. The two wiring-guard texts were outside
+    this property until Part 7 and satisfied it only by luck.
     """
-    for label, message in _three_messages().items():
+    messages = _all_messages()
+    assert len(messages) == 6
+    for label, message in messages.items():
         lowered = message.lower()
         assert "read" not in lowered, f"{label} message calls the work a read"
         assert "run" not in lowered, f"{label} message calls the work a run"

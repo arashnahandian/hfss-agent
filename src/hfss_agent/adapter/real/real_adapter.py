@@ -135,12 +135,31 @@ def _variation_hash(values: dict[str, str]) -> str:
     # token through AS the hash, so a comparison would fire on legitimate data.
     #
     # CHANGING THE CANONICALIZATION RE-KEYS EVERY VARIATION IN THE PRODUCT, and
-    # the three ways to do it by accident are dropping ``sort_keys``, letting
-    # ``json.dumps`` use its default separators, and changing the encoding. All
+    # there are FOUR one-line ways to do it by accident: dropping ``sort_keys``,
+    # letting ``json.dumps`` use its default separators, passing
+    # ``ensure_ascii=False``, and changing the ``.encode`` argument. The first
     # three are pinned by golden vectors in tests/adapter/test_variation_hash.py,
-    # which records six one-line-different canonicalizations producing six
+    # which records seven one-line-different canonicalizations producing seven
     # different digests. Deterministic sort keeps it stable across insertion
     # orders.
+    #
+    # ``ensure_ascii`` IS LOAD-BEARING AND IS LEFT AT ITS DEFAULT ON PURPOSE. It
+    # is the reason a non-ASCII variable name (``width_µm``) canonicalises to the
+    # pure-ASCII ``{"width_µm":"2"}`` — six literal characters, not the two
+    # utf-8 bytes of ``µ``. Setting it to ``False`` looks like a
+    # readability tidy-up, changes no digest for any ASCII-only variation, and
+    # silently re-keys every variation that carries a non-ASCII name — which is
+    # why the golden vectors include a non-ASCII one.
+    #
+    # THE ENCODING ARGUMENT, BY CONTRAST, CANNOT BE PINNED, and that is measured
+    # rather than an untested gap. Because ``ensure_ascii`` keeps the canonical
+    # string pure ASCII for EVERY input, ``.encode("utf-8")``, ``"ascii"``,
+    # ``"latin-1"`` and ``"cp1252"`` all produce identical bytes — so no input to
+    # this function can distinguish them and no test can either. ``utf-8`` is
+    # still the right spelling (it is the only one that stays correct if
+    # ``ensure_ascii`` is ever deliberately changed under a contract event), but
+    # a reader must not expect a test to catch a swap to another single-byte
+    # codec. Pin ``ensure_ascii`` and the encoding follows.
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

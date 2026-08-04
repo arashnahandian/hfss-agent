@@ -25,7 +25,7 @@ raise on are ``tool_io`` types; being unable to express the decision is the tell
 that it is not what §5 meant. ``tests/boundary/test_snapshot_import_audit.py``
 carries this as a named test so a future reader cannot narrow it silently.
 
-THE THREE REASONS ASSEMBLY REFUSES, all raising ``SnapshotAssemblyError``:
+THE FOUR REASONS ASSEMBLY REFUSES, all raising ``SnapshotAssemblyError``:
 
   1. A REFUSAL ARM WAS RECEIVED (ADR-28 decision 8). ``SelectionRefused`` gets no
      representation on any field: a refusal means a selection stage was missing,
@@ -43,6 +43,15 @@ THE THREE REASONS ASSEMBLY REFUSES, all raising ``SnapshotAssemblyError``:
      failures are already carried section by section as ``read_status`` and
      ``limitation``, which is finer-grained honesty than an arm could give. A
      three-section read therefore yields no snapshot.
+  4. A UNION-TYPED INPUT HELD AN UNDECLARED TYPE — the wiring guard. No
+     correctly-typed caller can reach it, which is exactly why it is here: the
+     annotations are not enforced at runtime, and a caller that passed the wrong
+     object would otherwise have it composed into a valid-looking artifact. It
+     is NOT folded into reason 1, because reporting a broken call path as an
+     upstream decline would send a maintainer to the wrong module — but it IS
+     the same CATEGORY as the other three (it refuses, emits no snapshot, and
+     raises the same type), so it is counted here and held to the same message
+     properties by ``tests/snapshot/test_snapshot_assembly.py``.
 
 WHAT ``created_at`` MEANS. Stated here in the words a stranger should be able to
 read in six months, because the natural misreading — "this is when we looked at
@@ -154,9 +163,9 @@ class SnapshotAssemblyError(Exception):
     on; it is a record asserting something nobody verified, and it is the one
     thing that must never cross the wrapper->engine seam.
 
-    See this module's docstring for the three reasons that reach here: a refusal
-    arm was received, the ``SelectionChain`` was incomplete, or the
-    ``Inspection`` was a subset read.
+    See this module's docstring for the four reasons that reach here: a refusal
+    arm was received, the ``SelectionChain`` was incomplete, the ``Inspection``
+    was a subset read, or a union-typed input held an undeclared type.
 
     A DELIBERATE FOURTH DUPLICATE of ``InspectionAssemblyError``,
     ``NativeValidationAssemblyError`` and ``MetricsAssemblyError``, and ADR-28
@@ -260,7 +269,8 @@ def assemble_snapshot(
 
     Raises:
         SnapshotAssemblyError: a refusal arm was supplied, the selection chain
-            was incomplete, or the inspection did not carry all eight sections.
+            was incomplete, the inspection did not carry all eight sections, or
+            a union-typed input held a type this signature does not declare.
     """
     narrowed_selection = _selection(selection)
     narrowed_inspection = _inspection(inspection)

@@ -20,20 +20,39 @@ returned zero matches; the only assertion on the field was
 ``variation_hash.startswith("sha256:")``, which cannot tell one canonicalization
 from another.
 
-WHAT "BYTE-FOR-BYTE" IS PROTECTING AGAINST, measured rather than asserted. Six
-canonicalizations of the SAME input ``{"w": "2mm", "h": "1.6mm"}``, each one line
-different from the next, produce six different digests:
+WHAT "BYTE-FOR-BYTE" IS PROTECTING AGAINST, measured rather than asserted. Seven
+canonicalizations of the SAME input ``{"width_µm": "2", "h": "1.6mm"}``, each one
+line different from the next, produce seven different digests:
 
-    json sort_keys + compact separators  (the real one)   f400eee42dafcdaa...
-    json sort_keys, DEFAULT separators                    6183781fcf06f688...
-    json compact, NO sort_keys                            742f09b44e9dce81...
-    repr(sorted(items))                                   a0b7e43dbc1cc4ac...
-    "k=v" newline-joined, sorted                          1e6ef74ded340091...
-    "k=v" semicolon-joined, sorted                        8b102be2dac0b8f7...
+    json sort_keys + compact separators  (the real one)   06f3009c529bdd65...
+    json sort_keys, DEFAULT separators                    22d2a5fd6d9f448e...
+    json compact, NO sort_keys                            546b504a65a2ef37...
+    repr(sorted(items))                                   67b0c6d4ea915b13...
+    "k=v" newline-joined, sorted                          69f9c273a0ff022c...
+    "k=v" semicolon-joined, sorted                        18b73fd9060e06bb...
+    json sort_keys + compact, ensure_ascii=False          8480e21be0843668...
 
-Dropping ``sort_keys``, or letting ``json.dumps`` use its default separators,
-looks like a tidy-up and silently re-keys every variation in the product. That is
-what these vectors stand in the way of.
+Dropping ``sort_keys``, letting ``json.dumps`` use its default separators, or
+passing ``ensure_ascii=False`` each looks like a tidy-up and silently re-keys
+every variation in the product. That is what these vectors stand in the way of.
+
+THE INPUT ABOVE CARRIES A NON-ASCII NAME ON PURPOSE, and the seventh row is why.
+``ensure_ascii=False`` produces byte-identical output to the default for every
+ASCII-only variation, so a table built on ``{"w": "2mm", "h": "1.6mm"}`` — which
+is what this file pinned until Part 7 — cannot see it at all. A variation named
+``width_µm`` or ``Ω_port`` is ordinary in an EM tool, and it is the only input
+shape under which that one-line change is visible.
+
+WHAT CANNOT BE PINNED HERE, stated so its absence is not read as an oversight:
+the ``.encode("utf-8")`` argument. ``ensure_ascii`` (left at its default) keeps
+the canonical string pure ASCII for EVERY input, so ``utf-8``, ``ascii``,
+``latin-1`` and ``cp1252`` produce identical bytes and no input to
+``_variation_hash`` can separate them. This file asserted the opposite until
+Part 7 — ``test_the_encoding_is_utf_8_and_a_non_ascii_name_proves_it`` claimed a
+non-ASCII name "proves" the encoding, and it did not, because ``json.dumps`` had
+already escaped the name to ``\\u00b5`` before ``.encode`` ever saw it. The
+replacement below asserts the real relationship: pin ``ensure_ascii``, and the
+encoding follows from it.
 
 WHAT THE VECTORS ARE, AND WHY THE BYTES ARE PINNED ALONGSIDE THE DIGEST. A digest
 alone tells a maintainer that something changed, not what; the canonical byte
@@ -101,6 +120,17 @@ GOLDEN_VECTORS: tuple[tuple[str, dict[str, str], bytes, str], ...] = (
         {},
         b"{}",
         "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    ),
+    # THE NON-ASCII VECTOR, and the only one that pins ``ensure_ascii``. Note
+    # what the canonical bytes are: ``µ`` as six literal ASCII characters,
+    # not the two utf-8 bytes of ``µ``. That escaping IS ``ensure_ascii`` at its
+    # default, and dropping it changes these bytes while leaving all three
+    # vectors above untouched.
+    (
+        "a non-ASCII variable name",
+        {"width_µm": "2", "h": "1.6mm"},
+        b'{"h":"1.6mm","width_\\u00b5m":"2"}',
+        "sha256:06f3009c529bdd65c76b3ca32f7e4d2ccc5cee315832e6a794ebf3f7874b8644",
     ),
 )
 
@@ -177,7 +207,7 @@ def test_every_vector_has_the_declared_shape() -> None:
 # --- 2. what the six canonicalizations demonstrate ---------------------------
 
 
-def test_six_near_miss_canonicalizations_give_six_different_digests() -> None:
+def test_seven_near_miss_canonicalizations_give_seven_different_digests() -> None:
     """THE MEASUREMENT BEHIND THIS FILE, recomputed rather than quoted.
 
     The module docstring lists these; this asserts they really are all distinct,
@@ -186,8 +216,14 @@ def test_six_near_miss_canonicalizations_give_six_different_digests() -> None:
 
     Each variant is ONE line different from the real implementation. That is the
     point: none of them looks like a breaking change at a glance.
+
+    THE INPUT MUST CARRY A NON-ASCII NAME or this test silently weakens to six:
+    ``ensure_ascii=False`` is byte-identical to the default on ASCII-only input,
+    so over ``{"w": "2mm", "h": "1.6mm"}`` the seventh variant collides with the
+    first and the assertion below fails for the wrong reason. Asserted rather
+    than commented, immediately after the loop.
     """
-    values = {"w": "2mm", "h": "1.6mm"}
+    values = {"width_µm": "2", "h": "1.6mm"}
     canonicalizations = (
         json.dumps(values, sort_keys=True, separators=(",", ":")),  # the real one
         json.dumps(values, sort_keys=True),  # default separators
@@ -195,26 +231,73 @@ def test_six_near_miss_canonicalizations_give_six_different_digests() -> None:
         repr(sorted(values.items())),
         "\n".join(f"{key}={value}" for key, value in sorted(values.items())),
         ";".join(f"{key}={value}" for key, value in sorted(values.items())),
+        json.dumps(  # ensure_ascii dropped
+            values, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ),
     )
     digests = {
         hashlib.sha256(text.encode("utf-8")).hexdigest() for text in canonicalizations
     }
     assert len(digests) == len(canonicalizations)
+    # The guard the docstring promises: the seventh variant is only distinct
+    # BECAUSE the input carries a non-ASCII name. On an ASCII-only map it is the
+    # first variant exactly, which is what made it invisible before Part 7.
+    ascii_only = {"w": "2mm", "h": "1.6mm"}
+    assert json.dumps(
+        ascii_only, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ) == json.dumps(ascii_only, sort_keys=True, separators=(",", ":"))
     # And the first one is the one the product actually uses.
     assert _variation_hash(values) == DIGEST_PREFIX + hashlib.sha256(
         canonicalizations[0].encode("utf-8")
     ).hexdigest()
 
 
-def test_the_encoding_is_utf_8_and_a_non_ascii_name_proves_it() -> None:
-    """The third thing a "harmless" edit could change, and the one the ASCII
-    vectors above cannot see: every vector here is ASCII, where utf-8, latin-1
-    and ascii all agree. A non-ASCII variable name separates them."""
+def test_the_encoding_argument_cannot_be_pinned_and_ensure_ascii_is_why() -> None:
+    """WHAT THIS FILE CAN AND CANNOT HOLD, measured — replacing an assertion that
+    named a property it did not test.
+
+    The predecessor was ``test_the_encoding_is_utf_8_and_a_non_ascii_name_proves
+    _it``, and it did not prove it. ``json.dumps`` escapes non-ASCII by default,
+    so ``{"width_µm": "2"}`` canonicalises to the pure-ASCII
+    ``{"width_\\u00b5m":"2"}`` — the name is already gone before ``.encode`` is
+    reached, and utf-8, ascii, latin-1 and cp1252 return the same bytes for it.
+    Swapping the encoding to any other single-byte codec left that test green.
+
+    So the honest split, both halves asserted here:
+
+      * ``ensure_ascii`` IS pinnable and IS pinned — by the fourth golden vector
+        and by the seventh near-miss above. Dropping it changes the digest for a
+        non-ASCII name and for nothing else.
+      * The ENCODING ARGUMENT is not pinnable by any input, because there is no
+        input for which the canonical string is not pure ASCII. That is a
+        property of the canonicalization, not a gap in the suite, and it is why
+        no test here claims to guard it.
+
+    The two are not independent: pin ``ensure_ascii`` and the encoding stops
+    mattering, which is the whole reason the first bullet is where the effort
+    went.
+    """
     values = {"width_µm": "2"}
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
-    assert _variation_hash(values) == DIGEST_PREFIX + hashlib.sha256(
-        canonical.encode("utf-8")
-    ).hexdigest()
+    # ``ensure_ascii`` at its default is what makes this true, for EVERY input.
+    assert canonical.isascii()
+    assert "\\u00b5" in canonical
+    assert "µ" not in canonical
+
+    # THE PRODUCT'S OWN OUTPUT, not a recipe recomputed beside it. Every codec
+    # reproduces what ``_variation_hash`` actually returned, which is the claim —
+    # asserting it over a locally-built string would leave this test green if the
+    # function stopped using this canonicalization at all.
+    digest = _variation_hash(values)
+    for codec in ("utf-8", "ascii", "latin-1", "cp1252"):
+        assert (
+            digest
+            == DIGEST_PREFIX + hashlib.sha256(canonical.encode(codec)).hexdigest()
+        ), f"{codec} disagrees, so the encoding argument IS observable after all"
+
+    # A multi-byte codec IS distinguishable, which is the narrow sense in which
+    # the encoding is constrained at all — and not the sense anyone would drift
+    # into by accident.
     assert canonical.encode("utf-8") != canonical.encode("utf-16")
 
 

@@ -62,17 +62,43 @@ from hfss_agent.snapshot import assemble_snapshot
 # ``is_solved`` is consulted before the convergence read. That reorder is QUEUED
 # TO ITS OWN ADAPTER-HYGIENE STEP and is deliberately not done here.
 #
-# WHEN IT LANDS, THIS TEST MUST CHANGE — ``SOLVE_STATE_REASON`` becomes
-# ``"no_solution"`` and the two constants become equal. That is the point of
-# pinning it: the day the adapter starts reporting honestly, a test asserting the
-# old misreport fails and forces someone to notice the improvement rather than
-# letting it pass silently. It needs no schema event either way, because adding a
-# producer for an existing Literal member is not a contract change.
+# WHEN IT LANDS, THIS FILE MUST BE EDITED BY HAND — ``SOLVE_STATE_REASON``
+# becomes ``"no_solution"`` and the two constants become equal. NOTHING HERE WILL
+# FAIL TO TELL YOU THAT, and the correction is Part 7's: this comment previously
+# claimed the opposite ("a test asserting the old misreport fails and forces
+# someone to notice"), which was wrong. See the honesty note below for what is
+# and is not pinned. The reorder step owns updating this file; no tripwire will
+# do it for them. It needs no schema event either way, because adding a producer
+# for an existing Literal member is not a contract change.
 SOLVE_STATE_REASON = "not_exposed_by_pyaedt"
 SOLVED_DATA_REASON = "no_solution"
 
-# The adapter's own limitation strings, quoted from ``real_adapter.py`` rather
-# than paraphrased, so a reworded refusal surfaces here as a diff.
+# WHAT THESE CONSTANTS ARE, AND WHAT THEY ARE NOT (corrected in Part 7). They are
+# TRANSCRIPTIONS of the adapter's limitation strings, written here so a reader
+# sees realistic prose instead of ``"x"``. They are NOT a pin on the adapter, and
+# the comment that stood here until Part 7 said they were ("quoted from
+# real_adapter.py ... so a reworded refusal surfaces here as a diff"). Nothing in
+# this file imports, reads, or executes the adapter; every assertion below
+# compares an assembled snapshot to the same constant used to build its input, so
+# a reworded refusal changes nothing here and no diff appears.
+#
+# THERE IS NO CHEAP WAY TO MAKE THEM A REAL PIN, which is why the fix is this
+# note rather than a better assertion. ``SOLVE_STATE_LIMITATION`` could be
+# imported if it were a module constant, but it is an inline literal; and
+# ``SOLVED_DATA_LIMITATION`` is not a literal at all — ``real_adapter`` builds it
+# with an f-string over ``f"{setup} : {sweep}"``, so the full string exists only
+# at call time and a grep for it finds nothing. Pinning it genuinely needs either
+# an adapter refactor (hoisting the limitations to constants — out of scope for a
+# snapshot step, and a change to the module every other suite depends on) or a
+# source-text scrape of ``real_adapter.py``, which pins source text rather than
+# behaviour and is the brittleness this suite avoids elsewhere.
+#
+# WHAT IS GENUINELY PINNED, so the gap is not overstated: the adapter's ``reason``
+# STRINGS are held to the contract's ``SolveDataUnavailableReason`` members by the
+# documented table in ``tests/schemas/test_snapshot_absence_arms.py``, under set
+# equality in both directions. That catches a member added or deleted on either
+# side. It will NOT catch the queued reorder either, because the reorder changes
+# which field gets which existing member and adds no member.
 SOLVE_STATE_LIMITATION = (
     "per-pass convergence history and convergence status are not exposed by "
     "PyAEDT for this setup type"
@@ -152,9 +178,19 @@ def test_every_input_is_constructible_without_fabricating_a_value() -> None:
 
 
 def test_the_two_solve_fields_carry_different_reasons() -> None:
-    """THE ASYMMETRY, pinned. See the comment on ``SOLVE_STATE_REASON`` for why
-    the two differ, why that is an adapter misreport rather than a W-8 choice,
-    and why this assertion must be CHANGED when the queued reorder lands."""
+    """W-8 PROPAGATES TWO DIFFERENT REASONS WITHOUT FLATTENING THEM — that, and
+    only that, is what this asserts.
+
+    It is not a pin on the adapter. The inputs are built from the two module
+    constants and the assertions compare the snapshot back to them, so what is
+    actually shown is that assembly carries two distinct ``SolveDataUnavailable``
+    values through to two distinct fields rather than reusing one. That is a real
+    W-8 property — a pass-through that re-wrapped either field would break it —
+    and it is a much smaller claim than this docstring made before Part 7.
+
+    See the comment on ``SOLVE_STATE_REASON`` for why the two reasons differ in
+    the live adapter, and for why nothing here fails when that stops being true.
+    """
     snapshot = never_solved()
 
     assert snapshot.solve_state.reason == SOLVE_STATE_REASON
@@ -163,8 +199,16 @@ def test_the_two_solve_fields_carry_different_reasons() -> None:
 
 
 def test_both_reasons_are_real_adapter_refusals() -> None:
-    """Checked against the producer table the schema suite pins, so a reason
-    nobody derived from an adapter refusal cannot be smuggled in here."""
+    """Checked against the contract ``Literal`` — which reaches the producer
+    table only INDIRECTLY, and the distinction is worth one line.
+
+    This asserts membership in ``SolveDataUnavailableReason``. What ties that
+    Literal to real adapter refusals is a separate assertion one suite over:
+    ``tests/schemas/test_snapshot_absence_arms.py`` holds the Literal and its
+    documented producer table to SET EQUALITY in both directions. So a reason
+    nobody derived from an adapter refusal cannot be smuggled in here — but the
+    thing preventing it lives there, not in this assertion.
+    """
     from hfss_agent.contract import SolveDataUnavailableReason
 
     valid = set(SolveDataUnavailableReason.__args__)
@@ -173,8 +217,15 @@ def test_both_reasons_are_real_adapter_refusals() -> None:
 
 
 def test_the_limitations_are_the_adapters_own_wording() -> None:
-    """The prose is the adapter's, carried through unchanged. W-8 writes no
-    limitation text of its own — it has no way to know why a read refused."""
+    """W-8 WRITES NO LIMITATION TEXT OF ITS OWN — it has no way to know why a
+    read refused, so whatever prose it was handed must arrive unchanged.
+
+    The prose used here is the adapter's, transcribed; but this test pins the
+    PASS-THROUGH, not the wording. An assembler that rewrote, truncated or
+    prefixed a limitation fails here. An adapter that rewords one does not — see
+    the comment on ``SOLVE_STATE_LIMITATION`` for why that pin is not cheaply
+    available and what does cover the reason strings instead.
+    """
     snapshot = never_solved()
     assert snapshot.solve_state.limitation == SOLVE_STATE_LIMITATION
     assert snapshot.solved_data.limitation == SOLVED_DATA_LIMITATION
