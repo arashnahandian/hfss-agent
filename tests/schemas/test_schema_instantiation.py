@@ -26,7 +26,6 @@ from hfss_agent.contract import (
     MetricRecord,
     NativeValidation,
     NativeValidationProvenance,
-    Project,
     ProvenanceRecord,
     Selection,
     SolutionExists,
@@ -42,7 +41,7 @@ def test_contract_version_literal_is_pinned() -> None:
     # literal, so a stray edit to the constant would flow through and pass every
     # other test silently. This one pin is what makes a change to the schema
     # version space loud — bumping it here is the deliberate, reviewed act.
-    assert CONTRACT_VERSION == "snapshot-2.0.0"
+    assert CONTRACT_VERSION == "snapshot-3.0.0"
 
 
 def _snapshot(variation: Variation) -> DesignSnapshot:
@@ -58,7 +57,9 @@ def _snapshot(variation: Variation) -> DesignSnapshot:
         ),
         selection=Selection(
             process_id=12345,
-            project=Project(name="patch_antenna", path=r"C:\proj\patch.aedt"),
+            # The bare project NAME (ADR-28). ``Selection`` no longer carries a
+            # ``Project``; the path stays on ``SessionStatus.SelectionChain``.
+            project="patch_antenna",
             design="HFSSDesign1",
             solution_type="DrivenModal",
             setup="Setup1",

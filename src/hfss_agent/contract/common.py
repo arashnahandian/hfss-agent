@@ -49,7 +49,18 @@ UntrustedStr = str
 # The first clause protects the engine from a surface it cannot see changing
 # under it; the second protects a stamped record from claiming a schema version
 # whose shape it no longer has. 2.4a's new types satisfy neither clause.
-CONTRACT_VERSION = "snapshot-2.0.0"
+#
+# ``3.0.0`` at Step 2.5a, and this is the FIRST amendment where the rule above
+# fires rather than being cited and declined. That amendment gave three
+# ``DesignSnapshot`` fields an absence arm, retyped ``Selection.project`` to a
+# bare name, and tightened ``created_at`` to ``AwareDatetime`` — every one of
+# them a type reachable from ``DesignSnapshot``, so both clauses of the first
+# limb are satisfied and the schema space MUST move. Major, not minor: removing
+# ``Project`` from ``Selection`` and narrowing ``created_at`` are breaking for a
+# producer, and a consumer exhaustively matching ``solve_state`` now has a
+# second arm to handle. Seeing ``snapshot-3.0.0`` beside package ``0.4.0``
+# remains correct rather than drift, for the same reason stated above.
+CONTRACT_VERSION = "snapshot-3.0.0"
 
 # --- Enumerated value sets fixed verbatim by System Design §2 ----------------
 
@@ -58,6 +69,59 @@ ReadStatus = Literal["ok", "not_readable"]
 
 # SolveState.convergence_status (§2 solve_state: "converged/stopped status")
 ConvergenceStatus = Literal["converged", "stopped"]
+
+# Why a snapshot carries no solve state or no solved data (ADR-28, Step 2.5a).
+# TWO MEMBERS ARE NOT ENOUGH FOR THREE STATES, which is what forced this: a
+# design that was never run neither ``converged`` nor ``stopped``, so before the
+# absence arm the only constructible snapshot for one asserted
+# ``convergence_status="stopped"`` for a solve that never started.
+#
+# EVERY MEMBER IS DERIVED FROM A REFUSAL THE ADAPTER ACTUALLY EMITS. A member
+# admitted because it seems like a state that ought to exist is the allow-list
+# rot ADR-27 decision 14 named, so the mapping is written out and pinned by a
+# test (tests/schemas/test_snapshot_absence_arms.py) that fails on set
+# inequality — a new member with no refusal behind it does not reach main:
+#
+#   no_solution              <- "no solved data"
+#   not_exposed_by_pyaedt    <- "convergence history unavailable",
+#                               "solve timestamp unavailable"
+#   not_found_in_design      <- "setup not found"
+#   unrecognised_by_wrapper  <- "unknown frequency unit"
+#
+# ``unrecognised_by_wrapper`` IS DELIBERATELY NOT FOLDED INTO
+# ``not_exposed_by_pyaedt``. PyAEDT answered; WE did not recognise the frequency
+# unit it used. Reporting our own gap as the solver's is the misattribution this
+# package refuses everywhere else, and the two send a reader to different fixes.
+#
+# ``no_solution`` IS NOT REACHABLE ON BOTH FIELDS TODAY, and the asymmetry is
+# accepted rather than papered over (ADR-28). A never-solved design's
+# ``solve_state`` comes back ``not_exposed_by_pyaedt``, because the adapter's
+# convergence read refuses before ``setup.is_solved`` is ever consulted — so the
+# amendment makes the SHAPE available, not the distinction observable. Making it
+# observable is a small reorder inside the adapter, queued to its own
+# adapter-hygiene step; it needs no further schema event, because adding a
+# producer for an existing member is not a contract change.
+SolveDataUnavailableReason = Literal[
+    "no_solution",
+    "not_exposed_by_pyaedt",
+    "not_found_in_design",
+    "unrecognised_by_wrapper",
+]
+
+# Why a snapshot carries no native-validation output (ADR-28, Step 2.5a).
+# ONE MEMBER, because the validate path emits exactly one non-fault refusal
+# ("native validation unavailable"). A second is added when a second producer
+# exists, never in anticipation of one.
+#
+# SEPARATE FROM ``SolveDataUnavailableReason``, NOT A SUBSET OF IT. The shared
+# spelling of ``not_exposed_by_pyaedt`` across the two is a COINCIDENCE OF
+# WORDING, not a kinship, and nothing may come to depend on the two staying
+# aligned — the same independence ADR-23 fixed between the three provenance
+# types. A single shared vocabulary was rejected because it would let this field
+# carry ``no_solution``, ``not_found_in_design`` or ``unrecognised_by_wrapper``,
+# none of which means anything for a design-level validation run that reads no
+# setup, needs no solution and normalises no units.
+NativeValidationUnavailableReason = Literal["not_exposed_by_pyaedt"]
 
 # Finding.source (§2 Finding — Identity). TWO members, where §2 still lists
 # three: ``hfss_native`` was REMOVED by the ADR-23 amendment, and §2 is being
