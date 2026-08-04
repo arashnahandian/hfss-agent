@@ -183,9 +183,26 @@ class Variation(StrictModel):
     """A first-class key carried everywhere (§2).
 
     A variation is a canonical variable-name -> value map plus a stable hash of
-    that map. The hash is supplied by the producer (the snapshot module); the
-    contract only carries it — computing it would be behaviour beyond
-    validation, which W-12 forbids here.
+    that map. The hash is supplied by its producer; the contract only carries it
+    — computing it would be behaviour beyond validation, which W-12 forbids
+    here.
+
+    THE PRODUCER IS THE ADAPTER, NOT THE SNAPSHOT MODULE (ADR-29). This
+    docstring said "the snapshot module" from Step 1.1, following System Design
+    §2's assignment of the canonical hash to W-8. That assignment turned out to
+    be unimplementable and §2 is being corrected: W-8 imports ``contract`` only
+    (ADR-28) so it cannot reach the hashing code, and a ``Variation`` must exist
+    at select / list_options time — it is a field on ``SelectionChain`` and so on
+    every ``SessionStatus`` — which is long before any snapshot is assembled. The
+    adapter mints it there; W-8 receives it as data, propagates it into
+    ``Selection.variation`` unchanged, and computes no hash of its own.
+
+    A ``variation_hash`` IS NOT GUARANTEED TO BE A DIGEST, and a consumer that
+    parses it as one is wrong about real data. The adapter carries an
+    unparseable PyAEDT variation token through AS the hash rather than inventing
+    values for it, so this field can legitimately hold ``"nominal"`` or an empty
+    string. Treat it as a stable HANDLE for one point in the design space —
+    equality is the only operation it supports.
     """
 
     values: dict[str, str]

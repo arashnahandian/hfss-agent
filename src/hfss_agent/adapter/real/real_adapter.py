@@ -111,10 +111,55 @@ def _parse_variation(variation_string: str) -> dict[str, str]:
 
 
 def _variation_hash(values: dict[str, str]) -> str:
-    # Local canonicalisation of the variation key. FLAGGED cross-module coupling:
-    # System Design §2 assigns the canonical variation hash to the W-8 snapshot
-    # module; this MUST be reconciled with that convention when W-8 lands so the
-    # two agree byte-for-byte. Deterministic sort keeps it stable meanwhile.
+    # THE CANONICAL VARIATION HASH. This is its one and only implementation.
+    #
+    # RESOLVED (ADR-29, Step 2.5b). The comment that stood here from Step 1.2
+    # flagged a cross-module coupling: System Design §2 assigned the canonical
+    # hash to the W-8 snapshot module, and said this "MUST be reconciled with
+    # that convention when W-8 lands so the two agree byte-for-byte". W-8 has
+    # landed, and the reconciliation is that there was never a second
+    # implementation to reconcile WITH — §2's assignment is what was wrong, and
+    # it is being corrected.
+    #
+    # WHY OWNERSHIP STAYS HERE. Two constraints, either of which alone decides
+    # it. W-8 imports ``contract`` ONLY (ADR-28), so it cannot reach this
+    # function or any other adapter code. And the ``Variation`` must exist at
+    # select / list_options time — it is a field on ``SelectionChain`` and so on
+    # every ``SessionStatus`` — which is long before any snapshot is assembled;
+    # a hash minted by W-8 would arrive too late for the session that has
+    # already published one.
+    #
+    # SO W-8 RECEIVES THIS VALUE AS DATA AND COMPUTES NO HASH AT ALL. It does not
+    # recompute-and-compare either, and that was decided on measurement rather
+    # than taste: ``_resolve_variation`` below carries an unparseable variation
+    # token through AS the hash, so a comparison would fire on legitimate data.
+    #
+    # CHANGING THE CANONICALIZATION RE-KEYS EVERY VARIATION IN THE PRODUCT, and
+    # there are FOUR one-line ways to do it by accident: dropping ``sort_keys``,
+    # letting ``json.dumps`` use its default separators, passing
+    # ``ensure_ascii=False``, and changing the ``.encode`` argument. The first
+    # three are pinned by golden vectors in tests/adapter/test_variation_hash.py,
+    # which records seven one-line-different canonicalizations producing seven
+    # different digests. Deterministic sort keeps it stable across insertion
+    # orders.
+    #
+    # ``ensure_ascii`` IS LOAD-BEARING AND IS LEFT AT ITS DEFAULT ON PURPOSE. It
+    # is the reason a non-ASCII variable name (``width_µm``) canonicalises to the
+    # pure-ASCII ``{"width_µm":"2"}`` — six literal characters, not the two
+    # utf-8 bytes of ``µ``. Setting it to ``False`` looks like a
+    # readability tidy-up, changes no digest for any ASCII-only variation, and
+    # silently re-keys every variation that carries a non-ASCII name — which is
+    # why the golden vectors include a non-ASCII one.
+    #
+    # THE ENCODING ARGUMENT, BY CONTRAST, CANNOT BE PINNED, and that is measured
+    # rather than an untested gap. Because ``ensure_ascii`` keeps the canonical
+    # string pure ASCII for EVERY input, ``.encode("utf-8")``, ``"ascii"``,
+    # ``"latin-1"`` and ``"cp1252"`` all produce identical bytes — so no input to
+    # this function can distinguish them and no test can either. ``utf-8`` is
+    # still the right spelling (it is the only one that stays correct if
+    # ``ensure_ascii`` is ever deliberately changed under a contract event), but
+    # a reader must not expect a test to catch a swap to another single-byte
+    # codec. Pin ``ensure_ascii`` and the encoding follows.
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
