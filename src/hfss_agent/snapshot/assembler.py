@@ -25,9 +25,7 @@ raise on are ``tool_io`` types; being unable to express the decision is the tell
 that it is not what §5 meant. ``tests/boundary/test_snapshot_import_audit.py``
 carries this as a named test so a future reader cannot narrow it silently.
 
-THE THREE REASONS ASSEMBLY REFUSES, all raising ``SnapshotAssemblyError`` (the
-raising logic itself lands in Part 3 of this step; this file is the skeleton the
-import audit constrains):
+THE THREE REASONS ASSEMBLY REFUSES, all raising ``SnapshotAssemblyError``:
 
   1. A REFUSAL ARM WAS RECEIVED (ADR-28 decision 8). ``SelectionRefused`` gets no
      representation on any field: a refusal means a selection stage was missing,
@@ -193,6 +191,7 @@ class SnapshotAssemblyError(Exception):
 
 
 def assemble_snapshot(
+    *,
     inspection: InspectDesignResult,
     native_validation: (
         NativeValidationBlock
@@ -208,10 +207,22 @@ def assemble_snapshot(
 ) -> DesignSnapshot:
     """Compose one ``DesignSnapshot`` from inputs a caller already holds.
 
-    Positional parameters with the optional one defaulted last, following
-    ``inspect_design``, ``validate_native`` and ``compute_metrics`` — none of the
-    three uses a keyword-only marker, and introducing one here would make W-8 the
-    odd assembler for no gain.
+    KEYWORD-ONLY, AND THE DEVIATION FROM THE THREE SIBLINGS IS THE POINT (ADR-29).
+    ``inspect_design``, ``validate_native`` and ``compute_metrics`` are all
+    positional, and none of them faced this: no sibling has two adjacent
+    parameters that can hold the SAME type. ``solve_state`` and ``solved_data``
+    share the ``SolveDataUnavailable`` arm, and in the never-solved case BOTH hold
+    it with different reasons — so transposing them produces a snapshot that
+    validates, round-trips through JSON, and asserts the wrong reason for each
+    absence. Measured, not feared: with a real ``SolvedData`` in the
+    ``solve_state`` slot pydantic refuses (``model_type`` at
+    ``('solve_state', 'SolveState')``), so the ONLY input shape that
+    mis-assembles silently is the both-absent one — which ADR-28 calls the
+    ordinary case for a design that was never solved.
+
+    The siblings' shape is evidence that nobody needed a ``*``, not that one is
+    wrong here. Seven parameters is also past the point where a positional call
+    reads clearly.
 
     THE PARAMETER TYPES ARE A HYBRID, AND THE SPLIT IS FORCED RATHER THAN CHOSEN.
     ``inspection`` and ``native_validation`` arrive as the UNIONS their producers
@@ -319,8 +330,27 @@ def _selection(chain: SelectionChain) -> Selection:
             "selection stage that was never chosen has no truthful value to "
             "substitute, and a snapshot missing one is not a lesser snapshot."
         )
+    # THE INVARIANT, STATED IN WORDS RATHER THAN AS A SUPPRESSION COMMENT.
     # ``missing`` being empty is what guarantees the two shaped stages below are
     # not None; re-checking them here would add a branch no input can reach.
+    #
+    # The check is a loop over a DERIVED tuple, which no static type checker can
+    # follow — the three sibling assemblers avoid that by narrowing each Optional
+    # with an explicit ``if x is None: raise`` a checker can see, and they carry
+    # no suppressions at their comparable sites. This module does not follow them
+    # there, because the derived tuple is what a test can hold to the contract's
+    # own field set, and hand-written narrowing cannot be.
+    #
+    # NO ``# type: ignore`` IS WRITTEN HERE, deliberately (ADR-29). This repo runs
+    # no type checker: CI is ``ruff check .`` and ``pytest``, there is no mypy or
+    # pyright in pyproject or the lockfile, and there are no pre-commit or git
+    # hooks. A suppression comment would therefore assert an interaction with a
+    # tool that never runs — and at the one line executing ADR-28's decision that
+    # is worse than noise, because a reader could take it to mean a checker
+    # validated everything around it and this was the known exception. If a
+    # checker is ever adopted, these two lines are where it will complain first;
+    # the fix at that point is to build the kwargs through ``getattr`` (whose
+    # ``Any`` return satisfies any checker) rather than to mute it here.
     project = chain.project
     variation = chain.variation
     return Selection(
@@ -328,7 +358,7 @@ def _selection(chain: SelectionChain) -> Selection:
         # THE PATH DROP. ``chain.project`` is a ``Project`` carrying name AND
         # path; only the name continues. This single expression is the whole
         # execution of ADR-28's decision — see this function's docstring.
-        project=project.name,  # type: ignore[union-attr]
+        project=project.name,
         design=chain.design,
         solution_type=chain.solution_type,
         setup=chain.setup,
@@ -337,7 +367,7 @@ def _selection(chain: SelectionChain) -> Selection:
         # canonical variation hash is the adapter's, and an unparseable variation
         # token is carried through AS the hash by ``_resolve_variation``, so a
         # value here is not always a digest and must not be treated as one.
-        variation=variation,  # type: ignore[arg-type]
+        variation=variation,
     )
 
 
