@@ -15,8 +15,10 @@ class MetricRecord(StrictModel):
     refuses to run before gates pass).
 
     Variation is not duplicated here: it travels with the value through
-    ``provenance`` (ProvenanceRecord.variation), the single standalone home
-    §2 gives it besides the snapshot's selection.
+    ``provenance`` (ProvenanceRecord.variation), which is the standalone home §2
+    gives it besides the snapshot's selection. ADR-30 added a third,
+    ``FindingProvenance.variation``, for judgments; a metric is not one, so this
+    record is unaffected by that split.
     """
 
     metric_name: str

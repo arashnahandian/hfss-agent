@@ -27,6 +27,7 @@ from hfss_agent.contract import (
     ComplexSample,
     Finding,
     FindingOutcome,
+    FindingProvenance,
     IntentObject,
     ProvenanceRecord,
     SolvedData,
@@ -63,7 +64,7 @@ def gate(
         severity="info",
         limitations_and_assumptions="Synthetic gate result for the W-7 tests.",
         applicability=Applicability(conditions={"has_setup": True}, held=True),
-        provenance=provenance_for(),
+        provenance=finding_provenance_for(),
         template_text=f"[gate] {name}: {outcome}",
     )
 
@@ -108,6 +109,37 @@ def provenance_for(
         reference_impedance=reference_impedance,
         solve_timestamp=datetime(2026, 7, 17, 9, 30, tzinfo=timezone.utc),
         freshness_status="fresh",
+        snapshot_id="snap-001",
+        contract_version=CONTRACT_VERSION,
+        wrapper_version="0.2.0",
+    )
+
+
+def finding_provenance_for(
+    project: str = "patch_antenna",
+    design: str = "HFSSDesign1",
+    variation_hash: str = "sha256:deadbeefcafef00d",
+    variation_values: dict[str, str] | None = None,
+) -> FindingProvenance:
+    """A complete FindingProvenance, for the gate results above.
+
+    SEPARATE FROM ``provenance_for`` RATHER THAN DERIVED FROM IT, and the two
+    must not be folded together: this file needs BOTH shapes at once, because a
+    gate Finding and a MetricRecord carry different provenance types (ADR-30).
+    ``reference_impedance`` is absent here and is the reason the two cannot
+    share — it is the one input ``provenance_for`` exists to vary, and a
+    judgment has none.
+    """
+    return FindingProvenance(
+        project=project,
+        design=design,
+        solution_type="DrivenModal",
+        setup="Setup1",
+        sweep="Sweep1",
+        variation=Variation(
+            values=variation_values or {"width": "2.0mm", "freq": "2.4GHz"},
+            variation_hash=variation_hash,
+        ),
         snapshot_id="snap-001",
         contract_version=CONTRACT_VERSION,
         wrapper_version="0.2.0",

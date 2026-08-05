@@ -18,6 +18,7 @@ from hfss_agent.contract import (
     DesignSnapshot,
     Environment,
     Finding,
+    FindingProvenance,
     FreshnessEvidence,
     Inspection,
     InspectionProvenance,
@@ -191,6 +192,35 @@ def test_native_validation_provenance_instantiates(
     }
 
 
+def test_finding_provenance_instantiates(
+    finding_provenance: FindingProvenance,
+) -> None:
+    # The optional defaults to absent rather than being required: a gate has no
+    # engine behind it and must not have to name one.
+    assert finding_provenance.engine_version is None
+    # Exactly the ten fields. The pin mirrors the two above and carries the same
+    # job, plus one this type needs more than they do: five fields were DROPPED
+    # from ProvenanceRecord to build it (expression, reference_impedance,
+    # solve_timestamp, freshness_status, rule_version) and two more were
+    # deliberately not added (evaluated_at, evaluated_under_aedt_version). Each
+    # is exactly the kind of field a later change would restore as "obviously
+    # missing", and every one of them would re-introduce a claim a judgment
+    # cannot earn. Restoring one is a visible diff on this line, not a quiet
+    # edit one file over.
+    assert set(FindingProvenance.model_fields) == {
+        "project",
+        "design",
+        "solution_type",
+        "setup",
+        "sweep",
+        "variation",
+        "snapshot_id",
+        "contract_version",
+        "wrapper_version",
+        "engine_version",
+    }
+
+
 def test_inspection_provenance_rejects_naive_read_at() -> None:
     # A naive instant would silently read as local time; "when was this read"
     # must never be ambiguous by an offset.
@@ -222,19 +252,46 @@ def test_native_validation_provenance_rejects_naive_validated_at() -> None:
         )
 
 
-def test_inspection_provenance_shares_no_base_with_provenance_record() -> None:
-    """The two are independent types (ADR-20 chose Option B over a shared base).
+# Every unordered pair of the four provenance types. Written out rather than
+# generated from a registry, so adding a fifth type is a visible edit here
+# instead of silently inheriting coverage that was never reviewed.
+_PROVENANCE_TYPE_PAIRS = [
+    (ProvenanceRecord, InspectionProvenance),
+    (ProvenanceRecord, NativeValidationProvenance),
+    (ProvenanceRecord, FindingProvenance),
+    (InspectionProvenance, NativeValidationProvenance),
+    (InspectionProvenance, FindingProvenance),
+    (NativeValidationProvenance, FindingProvenance),
+]
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    _PROVENANCE_TYPE_PAIRS,
+    ids=lambda pair: pair.__name__,
+)
+def test_the_four_provenance_types_share_no_base_class(
+    left: type[StrictModel], right: type[StrictModel]
+) -> None:
+    """All four are independent types, pairwise (ADR-20 dec. Option B, ADR-23,
+    ADR-30).
 
     Guards the decision itself: a later refactor that factors out a common
-    parent — the natural-looking cleanup — would let a field added for solve
-    provenance appear on a structural read, which is the exact dishonesty this
-    gap closed.
+    parent — the natural-looking cleanup, and more tempting at four types than
+    it was at two — would let a field added for solve provenance appear on a
+    structural read, or an ``expression`` appear on a judgment, which is the
+    exact dishonesty each of these types was split off to close.
+
+    PAIRWISE RATHER THAN ONE NAMED PAIR, because a base class shared by any two
+    of the four is the defect; the original form of this test checked only
+    ``InspectionProvenance``/``ProvenanceRecord`` and would have passed while
+    ``FindingProvenance`` inherited from either of the other two.
     """
-    assert not issubclass(InspectionProvenance, ProvenanceRecord)
-    assert not issubclass(ProvenanceRecord, InspectionProvenance)
-    shared = set(InspectionProvenance.__mro__) & set(ProvenanceRecord.__mro__)
+    assert not issubclass(left, right)
+    assert not issubclass(right, left)
+    shared = set(left.__mro__) & set(right.__mro__)
     # StrictModel is contract-wide; anything narrower would be a shared base
-    # specific to these two.
+    # specific to this pair.
     assert shared == {StrictModel, BaseModel, object}
 
 

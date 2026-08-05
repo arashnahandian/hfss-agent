@@ -53,9 +53,11 @@ class Selection(StrictModel):
     """The explicit selection chain captured in the snapshot (§2 selection).
 
     ``variation`` originates here — the one explicitly user-selected variation
-    the Tier 1 UX computes for (§2; no silent "nominal"). This is one of only
-    two standalone homes §2 gives the variation key (the other is
-    ProvenanceRecord); everywhere else it travels via provenance.
+    the Tier 1 UX computes for (§2; no silent "nominal"). §2 gave the variation
+    key two standalone homes, this one and ``ProvenanceRecord``; ADR-30 added a
+    third, ``FindingProvenance``, when a judgment turned out to need the key
+    without any of the solve fields that surround it there. Everywhere else it
+    travels via provenance.
     """
 
     process_id: int
@@ -261,8 +263,8 @@ class NativeValidationUnavailable(StrictModel):
     THE SHARED SPELLING OF ``not_exposed_by_pyaedt`` IS A COINCIDENCE OF
     WORDING, NOT A KINSHIP. Nothing may come to depend on the two reason sets
     staying aligned; a member added to one is not a member of the other. This is
-    the same independence ADR-23 fixed between the three provenance types, for
-    the same reason.
+    the same independence ADR-23 fixed between the provenance types — three of
+    them then, four since ADR-30 — for the same reason.
 
     ``limitation`` is required and carries the same typing note as
     ``SolveDataUnavailable.limitation``; the one refusal behind this type
