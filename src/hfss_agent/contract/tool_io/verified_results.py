@@ -149,14 +149,11 @@ class MetricsComputedWithCaveats(StrictModel):
     to carry a qualification, which is *why* a ``warning`` had to refuse before
     this arm existed, rather than a judgment that a warning deserved refusing.
 
-    NOT A SUBCLASS OF ``MetricsComputed``, and the shared name prefix is not a
-    hint that it is one — the same independence the four provenance types hold.
-    ``isinstance(result, MetricsComputed)`` is FALSE for one of these, and that is
-    correct: a consumer that wants clean results only must not silently receive
-    caveated ones. A consumer routing on the ``outcome`` STRING must match it
-    whole and never by prefix — ``"metrics_computed_with_caveats"`` does start
-    with ``"metrics_computed"``, and a ``startswith`` would collapse exactly the
-    distinction this arm exists to draw.
+    NOT A SUBCLASS OF ``MetricsComputed``, and the shared CLASS-NAME prefix is
+    not a hint that it is one — the same independence the four provenance types
+    hold. ``isinstance(result, MetricsComputed)`` is FALSE for one of these, and
+    that is correct: a consumer that wants clean results only must not silently
+    receive caveated ones.
 
     NAMED FOR THE UGLY-BUT-UNAMBIGUOUS READING, deliberately. "Qualified" carries
     both "hedged" and "certified" in English, and in an RF context the second is
@@ -167,7 +164,19 @@ class MetricsComputedWithCaveats(StrictModel):
     of the name never being read as its own opposite.
     """
 
-    outcome: Literal["metrics_computed_with_caveats"] = "metrics_computed_with_caveats"
+    # THE LITERAL DELIBERATELY DOES NOT MIRROR THE CLASS NAME, and restoring the
+    # mirror would reintroduce a real defect rather than tidy anything.
+    # ``metrics_computed_with_caveats`` would have ``MetricsComputed``'s literal
+    # as a PROPER PREFIX, so a consumer routing on the string with ``startswith``
+    # — or any prefix match — would read a caveated result as a clean one, which
+    # is the exact distinction this arm exists to draw. Dropping the
+    # ``computed_`` makes that collision UNCONSTRUCTIBLE instead of merely
+    # documented, which is how this package handles dangerous states everywhere
+    # else. ``MetricsRefused`` already decouples the two spaces (its literal is
+    # ``gates_failed``), so there is no consistency to preserve by matching.
+    # ``test_no_outcome_literal_is_a_prefix_of_another`` pins it over all four
+    # arms, so a future arm cannot reintroduce the collision from the other side.
+    outcome: Literal["metrics_with_caveats"] = "metrics_with_caveats"
     metrics: list[MetricRecord]
     # NON-EMPTY BY THE SCHEMA, unlike ``metrics`` beside it. An empty list here is
     # a specific dishonesty a type can prevent: this arm announces a caveat in its

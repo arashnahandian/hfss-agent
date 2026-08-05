@@ -249,7 +249,7 @@ def test_metrics_computed_with_caveats_arm_validates(
         qualifying_gates=[_gate_with(valid_finding_kwargs, "warning")],
         template_text="[metrics] s11_min (convergence: warning)",
     )
-    assert result.outcome == "metrics_computed_with_caveats"
+    assert result.outcome == "metrics_with_caveats"
     # Round-trips through the union, so the fourth arm is reachable by
     # discriminator from a wire payload and not only by direct construction.
     assert _COMPUTE_METRICS.validate_python(result.model_dump()) == result
@@ -296,7 +296,7 @@ def test_an_outcome_off_the_allow_list_cannot_ride_in_beside_numbers(
     naming none.
     """
     payload = {
-        "outcome": "metrics_computed_with_caveats",
+        "outcome": "metrics_with_caveats",
         "metrics": [metric.model_dump()],
         "qualifying_gates": [_gate_with(valid_finding_kwargs, outcome).model_dump()],
         "template_text": "x",
@@ -343,6 +343,42 @@ def test_the_qualifying_allow_list_accounts_for_every_finding_outcome() -> None:
         "fail",
         "not_evaluated",
     }
+
+
+def test_no_outcome_literal_is_a_prefix_of_another() -> None:
+    """No arm's ``outcome`` string is a proper prefix of another arm's.
+
+    THE COLLISION THIS FORBIDS ONCE EXISTED. The qualified arm's literal was
+    ``"metrics_computed_with_caveats"``, which has ``MetricsComputed``'s literal
+    as a proper prefix, so a consumer routing with ``startswith`` — or any prefix
+    match — would have read a caveated result as a clean one. Dropping the
+    ``computed_`` removed it; this keeps it removed, in both directions.
+
+    BOTH DIRECTIONS IS THE POINT, and it is why this is derived over the union
+    rather than asserted about one arm. The obvious regression is someone
+    "tidying" the qualified arm's literal to mirror its class name. The one no
+    hand-written check would catch is a FIFTH arm arriving with a literal that
+    some existing arm is a prefix of — the collision reintroduced from the other
+    side, by a person with no reason to have read this file.
+
+    NOT A PIN ON THE LITERAL VALUES. Renaming an arm's outcome is a wire-format
+    change and belongs to whatever amendment makes it; this constrains only the
+    relationship between them, so it stays green through any rename that keeps
+    the four distinguishable by whole-string equality.
+    """
+    arms = get_args(get_args(ComputeMetricsResult)[0])
+    literals = sorted(arm.model_fields["outcome"].default for arm in arms)
+    # The walk found the arms rather than an empty tuple — otherwise the
+    # pairwise loop below would pass by having nothing to compare.
+    assert len(literals) == 4, literals
+
+    collisions = [
+        (shorter, longer)
+        for shorter in literals
+        for longer in literals
+        if shorter != longer and longer.startswith(shorter)
+    ]
+    assert collisions == [], collisions
 
 
 @pytest.mark.parametrize(
