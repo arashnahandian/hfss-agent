@@ -136,6 +136,35 @@ class FreshnessEvidence(StrictModel):
     boolean.
     """
 
+    # THERE IS NO KEY VOCABULARY HERE, and that absence is the fact worth
+    # documenting rather than a gap in this comment. A reader who greps for a key
+    # will find one and reasonably conclude it is the convention; it is not.
+    #
+    # THE TWO PRODUCERS DISAGREE IN KIND, not merely in which keys they choose:
+    #
+    #   * the REAL adapter emits ``available_signals={}`` with
+    #     ``determinable=False``, unconditionally and with no branch above it
+    #     (``adapter/real/real_adapter.py:575-577``). On real hardware this
+    #     mapping is ALWAYS empty, so no key vocabulary exists in production at
+    #     all. The comment directly above that call says why: PyAEDT exposes no
+    #     reliable design-modified-since-solve signal, so we report nothing rather
+    #     than guess (ADR-4).
+    #   * the FAKE adapter emits ``{"design_modified_since_solve": False}`` with
+    #     ``determinable=True`` (``adapter/fake/scenario.py:227-230``).
+    #
+    # So the one key name a reader can find is the fake's invention, naming the
+    # exact signal the real adapter states it cannot obtain — an ASSERTED
+    # DETERMINATION where the real path has no observation. Reading it as the
+    # vocabulary would tell you this package has a design-modified signal, which
+    # is the one thing ADR-4 recorded that it does not. The fake carries it so the
+    # determinable=True branch of the freshness gate is reachable in tests, and
+    # for no other reason.
+    #
+    # ``dict[str, Any]`` IS THEREFORE HONEST RATHER THAN LAZY: what signals a
+    # future PyAEDT might expose is unknown, and fixing a key set now would be
+    # inventing one. Consumers must treat this as evidence to render, keyed by
+    # whatever the producer chose, and must never branch on a key name —
+    # ``determinable`` is the field to branch on, which is why it is separate.
     available_signals: dict[str, Any]
     determinable: bool
 
@@ -169,6 +198,30 @@ class SolveState(StrictModel):
     adaptive_pass_history: list[Any]
     delta_s_progression: list[float]
     convergence_status: ConvergenceStatus  # converged / stopped (§2)
+    # KEY CONVENTION: ``f"{setup}:{sweep}"`` — the two names joined by a bare
+    # colon, NO SURROUNDING SPACES. Both producers spell it that way:
+    # ``adapter/real/real_adapter.py:569`` builds
+    # ``{f"{selection.setup}:{selection.sweep}": timestamp}`` and
+    # ``adapter/fake/scenario.py:223-225`` mints ``"Setup1:Sweep1"`` to match.
+    #
+    # DO NOT CONFUSE IT WITH PyAEDT'S SETUP-SWEEP NAME, which is spelled WITH
+    # spaces — the same file builds ``f"{selection.setup} : {selection.sweep}"``
+    # at ``real_adapter.py:634`` to hand to ``get_solution_data``. Two spellings
+    # of one pair live in one module; only the un-spaced one is ever a key here,
+    # and a consumer that reuses PyAEDT's spelling to look one up gets a miss
+    # rather than an error.
+    #
+    # EXACTLY ONE ENTRY, always. The ``dict`` shape reads as "many setups", but
+    # both producers emit a single pair — the one the session has SELECTED — so a
+    # consumer must not treat a lookup miss as "that setup was never solved". The
+    # variation is deliberately not in the key: a snapshot is scoped to one
+    # variation already, carried on ``Selection.variation``.
+    #
+    # The VALUE is a plain ``datetime``, not ``AwareDatetime``, and the asymmetry
+    # with ``DesignSnapshot.created_at`` is deliberate — see
+    # ``tests/schemas/test_snapshot_created_at_is_aware.py``, which records that
+    # tightening this one is re-queued to Phase 5.2 rather than guessed at,
+    # because ``setup.get_profile()``'s shape is mock-only and unverified live.
     solve_timestamps: dict[str, datetime]
     solver_messages: list[UntrustedStr]  # surfaced as untrusted strings (§6.6)
     freshness_evidence: FreshnessEvidence

@@ -66,12 +66,14 @@ from hfss_agent.contract.tool_io.validation import (
     ValidationReport,
 )
 from hfss_agent.contract.tool_io.verified_results import (
+    GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION,
     CheckSolutionValidityRequest,
     CheckSolutionValidityResult,
     ComputeMetricsRequest,
     ComputeMetricsResult,
     ExportResultsRequest,
     MetricsComputed,
+    MetricsComputedWithCaveats,
     MetricsRefused,
     SolutionValidityReport,
     SolveHealthReport,
@@ -123,6 +125,13 @@ __all__ = [
     "ComputeMetricsResult",
     "ExportResultsRequest",
     "MetricsComputed",
+    # Metrics beside the gate results that qualify them, and the allow-list of
+    # gate outcomes permitted to do the qualifying. The constant is exported
+    # rather than kept private because W-7 must route on the SAME list the schema
+    # validates against — two spellings of one allow-list is the drift that would
+    # let a producer build a result the contract then rejects.
+    "MetricsComputedWithCaveats",
+    "GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION",
     "MetricsRefused",
     "SolutionValidityReport",
     "SolveHealthReport",

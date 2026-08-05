@@ -1,9 +1,13 @@
 """Tool I/O schema tests (§3): the 17 tools' request/response contracts.
 
 Proves the load-bearing structural guarantees:
-  * ComputeMetricsResult — "metrics *and* failing gates" and "neither populated"
+  * ComputeMetricsResult — "metrics *and* a FAILED gate" and "neither populated"
     are both unconstructible (the "no numbers on gate failure" promise, by the
-    type rather than by convention);
+    type rather than by convention). Since Step 2.6a one arm carries metrics
+    beside gate results, so that promise now rests on its allow-list as well as
+    on the arms' disjoint field sets, and both are exercised below — including
+    the allow-list ADMITTING each of its two members, which no rejection test
+    would catch the loss of;
   * ExportResult — its arms (written / refused / failed / cannot_evaluate) are
     mutually exclusive and routed by ``outcome``, including each of the three
     refusal remedies;
@@ -27,15 +31,16 @@ import json
 import subprocess
 import sys
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, get_args
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from hfss_agent.contract import (
     AuditRecord,
     Environment,
     Finding,
+    FindingOutcome,
     FreshnessEvidence,
     InspectionProvenance,
     InspectionSection,
@@ -47,9 +52,11 @@ from hfss_agent.contract import (
     ProvenanceRecord,
     SolutionExists,
     SolveState,
+    StrictModel,
     Variation,
 )
 from hfss_agent.contract.tool_io import (
+    GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION,
     AedtProcess,
     AedtProcessList,
     AttachRequest,
@@ -75,6 +82,7 @@ from hfss_agent.contract.tool_io import (
     ListSelectionOptionsRequest,
     ListSelectionOptionsResult,
     MetricsComputed,
+    MetricsComputedWithCaveats,
     MetricsRefused,
     NativeValidationBlock,
     PreflightEnvironment,
@@ -223,6 +231,146 @@ def test_metrics_refused_requires_failing_gates() -> None:
 def test_compute_metrics_union_rejects_unknown_outcome() -> None:
     with pytest.raises(ValidationError):
         _COMPUTE_METRICS.validate_python({"outcome": "bogus", "template_text": "x"})
+
+
+# --- the qualified arm: numbers WITH the gate results that hedge them ---------
+
+
+def _gate_with(finding_kwargs: dict[str, Any], outcome: str) -> Finding:
+    """One Finding at the given five-state outcome, otherwise the valid set."""
+    return Finding(**{**finding_kwargs, "outcome": outcome})
+
+
+def test_metrics_computed_with_caveats_arm_validates(
+    metric: MetricRecord, valid_finding_kwargs: dict[str, Any]
+) -> None:
+    result = MetricsComputedWithCaveats(
+        metrics=[metric],
+        qualifying_gates=[_gate_with(valid_finding_kwargs, "warning")],
+        template_text="[metrics] s11_min (convergence: warning)",
+    )
+    assert result.outcome == "metrics_computed_with_caveats"
+    # Round-trips through the union, so the fourth arm is reachable by
+    # discriminator from a wire payload and not only by direct construction.
+    assert _COMPUTE_METRICS.validate_python(result.model_dump()) == result
+
+
+@pytest.mark.parametrize("outcome", ["warning", "insufficient_evidence"])
+def test_the_allow_list_admits_both_of_its_members(
+    metric: MetricRecord, valid_finding_kwargs: dict[str, Any], outcome: str
+) -> None:
+    """Both members are shown BEING ADMITTED, not merely listed in a constant.
+
+    A guard is only half-specified by what it rejects. Narrowing the allow-list to
+    ``{"warning"}`` alone — the plausible edit, since a stopped solve is the more
+    intuitive of the two rulings — leaves every rejection test green and fails
+    only here. The ``insufficient_evidence`` case is the one that matters most in
+    practice: the real adapter reports freshness undeterminable unconditionally,
+    so if that member is ever dropped the tool stops showing numbers on every real
+    design, and nothing else in the suite would say so.
+    """
+    result = MetricsComputedWithCaveats(
+        metrics=[metric],
+        qualifying_gates=[_gate_with(valid_finding_kwargs, outcome)],
+        template_text="[metrics] s11_min",
+    )
+    assert [gate.outcome for gate in result.qualifying_gates] == [outcome]
+
+
+@pytest.mark.parametrize("outcome", ["fail", "not_evaluated", "pass"])
+def test_an_outcome_off_the_allow_list_cannot_ride_in_beside_numbers(
+    metric: MetricRecord, valid_finding_kwargs: dict[str, Any], outcome: str
+) -> None:
+    """The other three outcomes are refused, each for its own reason.
+
+    THE WIRE-DICT FORM IS THE REALISTIC ONE, following the precedent in the
+    finding-rejection suite: gate results reach a renderer as data, so what must
+    be refused is a payload, not just a mis-built in-process object. Going through
+    the union also proves the guard is reachable by discriminator rather than only
+    on direct construction.
+
+    ``fail`` is the core promise. ``not_evaluated`` and ``pass`` are the two a
+    DENY-LIST rewrite ("reject fail, permit the rest") would silently admit, and
+    admitting ``pass`` is the subtler damage of the two: it would let this arm be
+    filled entirely with passing gates, announcing a caveat in its ``outcome`` and
+    naming none.
+    """
+    payload = {
+        "outcome": "metrics_computed_with_caveats",
+        "metrics": [metric.model_dump()],
+        "qualifying_gates": [_gate_with(valid_finding_kwargs, outcome).model_dump()],
+        "template_text": "x",
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        _COMPUTE_METRICS.validate_python(payload)
+    # Named, so the rejection cannot be passing for an incidental reason — a
+    # missing field or a mis-routed discriminator would raise the same class.
+    assert outcome in str(excinfo.value)
+
+
+def test_qualifying_gates_cannot_be_empty(metric: MetricRecord) -> None:
+    """An empty list is refused by ``min_length=1``, not by the allow-list.
+
+    The two guards do not overlap and neither substitutes for the other: the
+    allow-list is satisfied vacuously by an empty list (nothing in it is off the
+    list), so removing ``min_length`` leaves every allow-list test green and lets
+    a result claim a caveat while naming none.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        MetricsComputedWithCaveats(
+            metrics=[metric], qualifying_gates=[], template_text="x"
+        )
+    assert "too_short" in str(excinfo.value)
+
+
+def test_the_qualifying_allow_list_accounts_for_every_finding_outcome() -> None:
+    """Set-equality pin, and the complement is derived rather than restated.
+
+    THE SECOND ASSERTION IS THE ONE THAT EARNS THIS TEST. Pinning the allow-list
+    alone would go green forever while a sixth ``FindingOutcome`` was added
+    somewhere else in the contract and quietly joined the refusing set without
+    anyone deciding it should. Deriving the refusing set as the complement of the
+    allow-list over ``FindingOutcome``'s actual members means a new member fails
+    HERE, at the decision, which is exactly what an allow-list is for.
+    """
+    assert GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION == {
+        "warning",
+        "insufficient_evidence",
+    }
+    all_outcomes = set(get_args(FindingOutcome))
+    assert all_outcomes - GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION == {
+        "pass",
+        "fail",
+        "not_evaluated",
+    }
+
+
+@pytest.mark.parametrize(
+    "sibling",
+    [MetricsComputed, MetricsRefused, CannotEvaluate],
+    ids=lambda cls: cls.__name__,
+)
+def test_the_qualified_arm_shares_no_base_with_its_sibling_arms(
+    sibling: type[Any],
+) -> None:
+    """The four arms are independent classes, and the shared name prefix is not
+    an inheritance hint.
+
+    Two live consumers make this concrete rather than stylistic. Subclassing
+    ``MetricsComputed`` — the natural-looking cleanup, since the two share every
+    field but one — would make ``isinstance(result, MetricsComputed)`` TRUE for a
+    caveated result, and the assembly suite routes on exactly that call, so a
+    consumer asking for clean numbers would silently receive hedged ones.
+    Subclassing ``MetricsRefused`` would be worse in the other direction: the
+    broker's refusal check is an ``isinstance`` over a tuple that includes it, so
+    a result carrying numbers would be logged and handled as a refusal.
+    """
+    assert not issubclass(MetricsComputedWithCaveats, sibling)
+    assert not issubclass(sibling, MetricsComputedWithCaveats)
+    shared = set(MetricsComputedWithCaveats.__mro__) & set(sibling.__mro__)
+    # StrictModel is contract-wide; anything narrower would be a base specific to
+    # this pair.
+    assert shared == {StrictModel, BaseModel, object}
 
 
 # --- ExportResult: four mutually exclusive arms ------------------------------
@@ -1063,8 +1211,8 @@ def test_request_schemas_construct() -> None:
         "objects",
     ]
     assert ValidateSetupRequest().include_supplemental is True
-    validity_req = CheckSolutionValidityRequest(target_frequency=2.4e9)
-    assert validity_req.target_frequency == 2.4e9
+    validity_req = CheckSolutionValidityRequest(target_frequency_hz=2.4e9)
+    assert validity_req.target_frequency_hz == 2.4e9
     assert ComputeMetricsRequest().intent is None
     assert (
         ComputeMetricsRequest(

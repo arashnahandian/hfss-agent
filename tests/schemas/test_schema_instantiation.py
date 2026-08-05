@@ -5,12 +5,17 @@ proof of W-8's "plain JSON-serializable data only" claim — datetimes and compl
 S (as real/imag) survive the trip.
 """
 
+import importlib
+import inspect
+import pkgutil
+import typing
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
+import hfss_agent.contract as contract_package
 from hfss_agent.contract import (
     CONTRACT_VERSION,
     AuditRecord,
@@ -35,6 +40,44 @@ from hfss_agent.contract import (
     StrictModel,
     Variation,
 )
+
+
+def _contract_models() -> list[type[BaseModel]]:
+    """Every pydantic model DEFINED under ``hfss_agent.contract``, tool_io
+    included.
+
+    Module equality on ``__module__`` is what makes it "defined here" rather than
+    "visible here": every one of these types is re-exported from at least one
+    ``__init__``, and counting a re-export would inflate any set derived from this
+    list without changing what the contract actually declares.
+    """
+    models: dict[str, type[BaseModel]] = {}
+    packages = [contract_package]
+    for module_info in pkgutil.walk_packages(
+        contract_package.__path__, contract_package.__name__ + "."
+    ):
+        packages.append(importlib.import_module(module_info.name))
+    for module in packages:
+        for value in vars(module).values():
+            if (
+                inspect.isclass(value)
+                and issubclass(value, BaseModel)
+                and value.__module__ == module.__name__
+            ):
+                models[f"{value.__module__}.{value.__name__}"] = value
+    return list(models.values())
+
+
+def _annotation_mentions(annotation: Any, target: type) -> bool:
+    """True when ``target`` appears anywhere inside an annotation tree.
+
+    Recurses through ``typing.get_args`` so a union arm, an ``Annotated`` payload,
+    or a container element counts — a field typed ``ProvenanceRecord | None`` is
+    still a carrier, and a set derived by identity alone would miss it.
+    """
+    if annotation is target:
+        return True
+    return any(_annotation_mentions(arg, target) for arg in typing.get_args(annotation))
 
 
 def test_contract_version_literal_is_pinned() -> None:
@@ -293,6 +336,47 @@ def test_the_four_provenance_types_share_no_base_class(
     # StrictModel is contract-wide; anything narrower would be a shared base
     # specific to this pair.
     assert shared == {StrictModel, BaseModel, object}
+
+
+def test_provenance_record_has_exactly_two_carriers() -> None:
+    """``ProvenanceRecord`` is carried by ``MetricRecord`` and
+    ``SolveHealthReport``, and by nothing else.
+
+    PINS A CLAIM ALREADY WRITTEN IN PRODUCT CODE. ADR-30 left
+    ``ProvenanceRecord.engine_version``/``rule_version`` with no producer, and the
+    docstring's argument for removing them turns on this set being exactly these
+    two: neither a metric nor a solve-health readout can have an engine behind it,
+    because the engine seam is ``evaluate(DesignSnapshot) -> list[Finding]`` and
+    nothing crossing it is either. A third carrier appearing would not break that
+    reasoning quietly — it would break it invisibly, since the argument lives in a
+    comment that no test reads.
+
+    DERIVED, NOT LISTED, and the difference is not academic here. A textual search
+    for ``ProvenanceRecord`` returns ``tool_io/inspection.py``, whose docstring
+    says ``InspectionResult``'s provenance is an ``InspectionProvenance`` and NOT
+    a ``ProvenanceRecord`` — a grep counts the sentence that denies it as though
+    it asserted it. This walk reads ``model_fields`` instead, so only a real
+    annotation counts, and it unwraps unions and containers so a
+    ``ProvenanceRecord | None`` or a ``list[ProvenanceRecord]`` could not hide.
+    """
+    carriers = {
+        f"{model.__name__}.{field_name}"
+        for model in _contract_models()
+        for field_name, field in model.model_fields.items()
+        if _annotation_mentions(field.annotation, ProvenanceRecord)
+    }
+    assert carriers == {"MetricRecord.provenance", "SolveHealthReport.provenance"}
+
+    # The same walk over the three sibling provenance types, as a control: it
+    # proves the walk can SEE a carrier rather than returning a small set because
+    # it is looking in the wrong place. It also pins that InspectionResult is a
+    # carrier of InspectionProvenance — the one the earlier miscount put here.
+    assert {
+        f"{model.__name__}.{field_name}"
+        for model in _contract_models()
+        for field_name, field in model.model_fields.items()
+        if _annotation_mentions(field.annotation, InspectionProvenance)
+    } == {"InspectionResult.provenance"}
 
 
 def test_metric_record_instantiates(provenance: ProvenanceRecord) -> None:
