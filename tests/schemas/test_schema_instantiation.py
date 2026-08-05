@@ -276,6 +276,14 @@ def test_finding_provenance_instantiates(
     # missing", and every one of them would re-introduce a claim a judgment
     # cannot earn. Restoring one is a visible diff on this line, not a quiet
     # edit one file over.
+    #
+    # THE ADDITION DIRECTION IS THE ONE THIS LINE OWNS, and a reader should not
+    # assume a set-equality pin is the detector in both. A field REMOVED from
+    # ``FindingProvenance`` never reaches this assertion: the fixture above
+    # supplies every field, so ``extra="forbid"`` rejects it during fixture
+    # setup and the test goes red as an ERROR before the pin body runs. Both
+    # directions are caught — but by two different mechanisms, and only the
+    # added-field one is this line.
     assert set(FindingProvenance.model_fields) == {
         "project",
         "design",

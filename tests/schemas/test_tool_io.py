@@ -303,9 +303,35 @@ def test_an_outcome_off_the_allow_list_cannot_ride_in_beside_numbers(
     }
     with pytest.raises(ValidationError) as excinfo:
         _COMPUTE_METRICS.validate_python(payload)
-    # Named, so the rejection cannot be passing for an incidental reason — a
-    # missing field or a mis-routed discriminator would raise the same class.
-    assert outcome in str(excinfo.value)
+
+    # ASSERTED AGAINST THE VALIDATOR'S OWN ERROR, NOT AGAINST THE WHOLE
+    # ``ValidationError`` TEXT, and the distinction is not fussiness — the
+    # earlier form (``assert outcome in str(excinfo.value)``) passed for an
+    # incidental reason in two of these three cases:
+    #
+    #   * a MIS-ROUTED DISCRIMINATOR raises a different error that enumerates
+    #     the expected tags, one of which is ``gates_failed``. That contains
+    #     "fail", so the ``[fail]`` case — the one this test exists for — stayed
+    #     GREEN while nothing about the allow-list was being exercised at all.
+    #     Not hypothetical: the payload's ``outcome`` literal above is
+    #     hand-maintained and was already hand-edited once, when Step 2.6a
+    #     dropped the ``computed_`` from it.
+    #   * a MISSING REQUIRED FIELD raises before the validator runs, and its
+    #     echoed input carries ``gate_status_at_computation: 'pass'``, so the
+    #     ``[pass]`` case stayed green too.
+    #
+    # A BARE ``outcome`` SUBSTRING IS NOT ENOUGH EVEN HERE, which is why the
+    # disallowed LIST is what gets matched: this validator's closing sentence
+    # reads "never one that failed, did not run, or passed", so "fail" and
+    # "pass" both appear in its message no matter which outcome was rejected.
+    # ``repr([outcome])`` matches the ``sorted(...)`` rendering of the offending
+    # set instead, which only the real rejection can produce.
+    errors = excinfo.value.errors()
+    assert len(errors) == 1, errors
+    assert errors[0]["type"] == "value_error", errors
+    message = errors[0]["msg"]
+    assert "do not qualify a metrics result" in message, message
+    assert repr([outcome]) in message, message
 
 
 def test_qualifying_gates_cannot_be_empty(metric: MetricRecord) -> None:
@@ -345,6 +371,21 @@ def test_the_qualifying_allow_list_accounts_for_every_finding_outcome() -> None:
     }
 
 
+def _prefix_collisions(literals: list[str]) -> list[tuple[str, str]]:
+    """Every ordered pair where the first is a PROPER prefix of the second.
+
+    Factored out so the test below can run the identical scan over a control set
+    and show it FINDING a collision, rather than only over the real arms and
+    asserting it finds none.
+    """
+    return [
+        (shorter, longer)
+        for shorter in literals
+        for longer in literals
+        if shorter != longer and longer.startswith(shorter)
+    ]
+
+
 def test_no_outcome_literal_is_a_prefix_of_another() -> None:
     """No arm's ``outcome`` string is a proper prefix of another arm's.
 
@@ -369,16 +410,21 @@ def test_no_outcome_literal_is_a_prefix_of_another() -> None:
     arms = get_args(get_args(ComputeMetricsResult)[0])
     literals = sorted(arm.model_fields["outcome"].default for arm in arms)
     # The walk found the arms rather than an empty tuple — otherwise the
-    # pairwise loop below would pass by having nothing to compare.
+    # pairwise scan below would pass by having nothing to compare.
     assert len(literals) == 4, literals
 
-    collisions = [
-        (shorter, longer)
-        for shorter in literals
-        for longer in literals
-        if shorter != longer and longer.startswith(shorter)
-    ]
-    assert collisions == [], collisions
+    assert _prefix_collisions(literals) == [], literals
+
+    # THE SAME SCAN, SHOWN FINDING A COLLISION, which is what makes the empty
+    # result above evidence rather than an assertion about nothing. "No X
+    # anywhere" needs a companion proving the check can see an X — the shape
+    # ``test_provenance_record_has_exactly_two_carriers`` uses when it walks the
+    # sibling provenance types as a control. The control set is the pair that
+    # actually existed before Step 2.6a dropped the ``computed_``, so this also
+    # records what the historical collision looked like.
+    assert _prefix_collisions(
+        ["gates_failed", "metrics_computed", "metrics_computed_with_caveats"]
+    ) == [("metrics_computed", "metrics_computed_with_caveats")]
 
 
 @pytest.mark.parametrize(

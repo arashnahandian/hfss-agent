@@ -124,6 +124,23 @@ S11_KEY = "S(1,1)"
 #     warning Finding still reaches the caller with its five-state outcome
 #     intact, so nothing is hidden or relabelled; it travels in
 #     ``MetricsRefused.failing_gates``, whose name is a mild misnomer for it.
+#
+# THE TWO REASONS ABOVE ARE SUPERSEDED AS OF STEP 2.6a; THE BEHAVIOUR BELOW IS
+# NOT. Separating those is the point of this note. The FACT each bullet rests on
+# still holds -- ``MetricsComputed`` has no field able to carry a caveat, and
+# §1.1 still forbids "cannot determine" reading as a pass. The INFERENCE drawn
+# from it, that a hedging gate must therefore REFUSE, no longer follows: Step
+# 2.6a added ``MetricsComputedWithCaveats``, whose required ``qualifying_gates``
+# field carries the caveat structurally, and whose allow-list
+# (``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``) admits exactly ``warning`` and
+# ``insufficient_evidence`` -- these two. A caveated result is not a pass and
+# does not read as one, so §1.1 is satisfied by that arm rather than bypassed.
+#
+# THIS ASSEMBLER HAS NOT MOVED, and Step 2.6b is where it does. Until then the
+# constant below is unchanged and every non-passing outcome still refuses, which
+# ``test_every_non_passing_outcome_refuses`` pins. Read the two bullets as the
+# record of why the old behaviour was correct while ``MetricsComputed`` was the
+# only computed arm -- not as an argument that a warning deserves refusing.
 GATE_OUTCOME_THAT_PERMITS_COMPUTATION = "pass"
 
 # Metric names, fixed here because they are what a downstream reader keys on.
@@ -205,8 +222,10 @@ class MetricsAssemblyError(Exception):
     """Assembly could not complete honestly, so no metrics are reported.
 
     RAISED, NOT RETURNED, and forced by the contract rather than chosen. The
-    three arms of ``ComputeMetricsResult`` are a populated ``MetricsComputed``,
-    a ``MetricsRefused`` carrying gate results, and a ``CannotEvaluate``
+    FOUR arms of ``ComputeMetricsResult`` are a populated ``MetricsComputed``,
+    a ``MetricsComputedWithCaveats`` carrying numbers beside the gate results
+    that hedge them (added at Step 2.6a; no producer here yet, Step 2.6b), a
+    ``MetricsRefused`` carrying gate results, and a ``CannotEvaluate``
     ("PyAEDT could not evaluate this"). None can say "the gates passed and the
     data arrived, but nothing computable was in it". Borrowing ``CannotEvaluate``
     would blame the solver for a wrapper-side or upstream-data problem -- the

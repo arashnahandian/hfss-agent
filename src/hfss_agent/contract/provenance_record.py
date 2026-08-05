@@ -226,11 +226,16 @@ class FindingProvenance(StrictModel):
     COMPUTED VALUE — cannot be filled honestly for one. This type carries no such
     field by construction, so it cannot make a claim it has not earned.
 
-    EVERY FIELD BELOW IS SOURCEABLE FROM A ``DesignSnapshot`` UNDER BOTH ARMS OF
-    ``solve_state``, and that is the test this type is shaped to pass. A design
-    that was never solved is an ordinary case, not an edge one (ADR-28), and a
-    gate must be able to report on it — so a provenance that exists only when a
-    solve does would block the judgment most worth making.
+    EVERY REQUIRED FIELD BELOW IS SOURCEABLE FROM A ``DesignSnapshot`` UNDER BOTH
+    ARMS OF ``solve_state``, and that is the test this type is shaped to pass.
+    REQUIRED is load-bearing in that sentence: ``engine_version`` is the one
+    optional and is NOT sourceable from a snapshot at all — an engine rule
+    supplies it from its own knowledge of itself, as the comment at that field
+    says. Stated here because the unqualified claim contradicted that comment.
+
+    A design that was never solved is an ordinary case, not an edge one
+    (ADR-28), and a gate must be able to report on it — so a provenance that
+    exists only when a solve does would block the judgment most worth making.
 
     THE FIRST PROVENANCE TYPE WITH TWO PRODUCERS, and the axis it divides on is
     JUDGES RATHER THAN COMPUTES — not "is a gate." W-9's gates and E-2's engine

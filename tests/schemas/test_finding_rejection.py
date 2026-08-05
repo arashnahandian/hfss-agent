@@ -124,10 +124,17 @@ def test_finding_rejects_a_provenance_record(
 
     # The four fields a judgment cannot earn are exactly what makes it a
     # ProvenanceRecord, so the rejection must name them rather than failing for
-    # some incidental reason.
+    # some incidental reason. ALL FOUR ARE ASSERTED, not the first two: the pair
+    # splits along the ADR-30 argument, and covering one half would leave the
+    # other unevidenced. ``expression``/``reference_impedance`` have no source in
+    # a DesignSnapshot EVER; ``solve_timestamp``/``freshness_status`` have none
+    # whenever ``solve_state`` takes its ``SolveDataUnavailable`` arm — the
+    # never-solved case that is ordinary rather than exceptional.
     message = str(excinfo.value)
     assert "expression" in message
     assert "reference_impedance" in message
+    assert "solve_timestamp" in message
+    assert "freshness_status" in message
 
 
 def test_finding_allows_missing_optional_suggested_action(
