@@ -45,7 +45,8 @@ UntrustedStr = str
 # change touches a type reachable from ``DesignSnapshot`` or ``Finding`` — the
 # two artifacts crossing ``evaluate()`` — or a type carrying a
 # ``contract_version`` field of its own (today ``DesignSnapshot``,
-# ``ProvenanceRecord``, ``InspectionProvenance``, ``NativeValidationProvenance``).
+# ``ProvenanceRecord``, ``InspectionProvenance``, ``NativeValidationProvenance``
+# and, since ADR-30, ``FindingProvenance`` — five, not four).
 # The first clause protects the engine from a surface it cannot see changing
 # under it; the second protects a stamped record from claiming a schema version
 # whose shape it no longer has. 2.4a's new types satisfy neither clause.
@@ -116,11 +117,12 @@ SolveDataUnavailableReason = Literal[
 # SEPARATE FROM ``SolveDataUnavailableReason``, NOT A SUBSET OF IT. The shared
 # spelling of ``not_exposed_by_pyaedt`` across the two is a COINCIDENCE OF
 # WORDING, not a kinship, and nothing may come to depend on the two staying
-# aligned — the same independence ADR-23 fixed between the three provenance
-# types. A single shared vocabulary was rejected because it would let this field
-# carry ``no_solution``, ``not_found_in_design`` or ``unrecognised_by_wrapper``,
-# none of which means anything for a design-level validation run that reads no
-# setup, needs no solution and normalises no units.
+# aligned — the same independence ADR-23 fixed between the provenance types,
+# three of them then and four since ADR-30. A single shared vocabulary was
+# rejected because it would let this field carry ``no_solution``,
+# ``not_found_in_design`` or ``unrecognised_by_wrapper``, none of which means
+# anything for a design-level validation run that reads no setup, needs no
+# solution and normalises no units.
 NativeValidationUnavailableReason = Literal["not_exposed_by_pyaedt"]
 
 # Finding.source (§2 Finding — Identity). TWO members, where §2 still lists
