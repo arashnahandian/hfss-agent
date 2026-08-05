@@ -46,7 +46,8 @@ UntrustedStr = str
 # two artifacts crossing ``evaluate()`` — or a type carrying a
 # ``contract_version`` field of its own (today ``DesignSnapshot``,
 # ``ProvenanceRecord``, ``InspectionProvenance``, ``NativeValidationProvenance``
-# and, since ADR-30, ``FindingProvenance`` — five, not four).
+# and, since ADR-30, ``FindingProvenance`` — five, not four; the count is stated
+# because a bare list rots silently when a type is added).
 # The first clause protects the engine from a surface it cannot see changing
 # under it; the second protects a stamped record from claiming a schema version
 # whose shape it no longer has. 2.4a's new types satisfy neither clause.
@@ -61,7 +62,44 @@ UntrustedStr = str
 # producer, and a consumer exhaustively matching ``solve_state`` now has a
 # second arm to handle. Seeing ``snapshot-3.0.0`` beside package ``0.4.0``
 # remains correct rather than drift, for the same reason stated above.
-CONTRACT_VERSION = "snapshot-3.0.0"
+#
+# ``4.0.0`` at Step 2.6a, and this is the FIRST amendment where the SECOND CLAUSE
+# fires. Every prior entry above either cited the rule and declined it (2.4a,
+# whose new types satisfied neither clause) or fired the FIRST limb only (2.5a,
+# reachability from ``DesignSnapshot``). Here BOTH fire, from two different
+# changes, and it is worth separating which does which because they protect
+# different things:
+#
+#   * FIRST CLAUSE — ``Finding.provenance`` was retyped from ``ProvenanceRecord``
+#     to ``FindingProvenance``. ``Finding`` is one of the two artifacts crossing
+#     ``evaluate()``, named in the rule itself, so a type reachable from it
+#     changed shape. This is the clause protecting the engine from a surface it
+#     cannot see moving under it, and E-2 reads exactly this field.
+#   * SECOND CLAUSE — ``FindingProvenance`` is a NEW TYPE CARRYING ITS OWN
+#     ``contract_version``, the fifth such, and ``ProvenanceRecord`` (already the
+#     second) lost two fields. This is the clause protecting a stamped record from
+#     claiming a schema version whose shape it no longer has, and this amendment
+#     is the case it was written for: a ``snapshot-3.0.0`` ``ProvenanceRecord``
+#     has two slots a ``4.0.0`` one does not.
+#
+# MAJOR, NOT MINOR, on three independent counts, any one of which would suffice:
+# retyping ``Finding.provenance`` breaks a producer filling the old type (its
+# ``expression`` and ``reference_impedance`` are gone) AND an exhaustive consumer
+# reading them; deleting ``ProvenanceRecord.engine_version``/``rule_version``
+# breaks a consumer that reads either; and a consumer exhaustively matching
+# ``ComputeMetricsResult`` now has a fourth arm to handle.
+#
+# WHAT DID NOT DRIVE IT, stated because the amendment is larger than its version
+# event: the fourth ``compute_metrics`` arm, the
+# ``target_frequency`` -> ``target_frequency_hz`` rename, and the outcome-literal
+# change are all ``tool_io`` — not reachable FROM ``DesignSnapshot`` or
+# ``Finding`` (they reference those types; the clause is about the closure the
+# two artifacts reach, not what reaches them) and carrying no
+# ``contract_version``. Every one is breaking for a tool-surface consumer, which
+# is why the PACKAGE version moves — but on this rule as written, none of them
+# alone would have moved the schema space. Seeing ``snapshot-4.0.0`` beside
+# package ``0.5.0`` remains correct rather than drift.
+CONTRACT_VERSION = "snapshot-4.0.0"
 
 # --- Enumerated value sets fixed verbatim by System Design §2 ----------------
 

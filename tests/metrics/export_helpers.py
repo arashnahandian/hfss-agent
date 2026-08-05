@@ -104,7 +104,7 @@ EXPECTED_HEADER_TEMPLATE = (
     "! solve_timestamp: 2026-07-17T09:30:00+00:00\n"
     "! reference_impedance_ohm: 50.0\n"
     "! wrapper_version: 0.2.0\n"
-    "! contract_version: snapshot-3.0.0\n"
+    "! contract_version: snapshot-4.0.0\n"
     "# HZ S RI R 50.0\n"
 )
 
@@ -123,5 +123,5 @@ CSV_PROVENANCE_HEADERS = (
 )
 CSV_PROVENANCE_VALUES = (
     "patch_antenna,HFSSDesign1,Setup1,Sweep1,freq=2.4GHz; width=2.0mm,"
-    "sha256:deadbeefcafef00d,2026-07-17T09:30:00+00:00,50.0,0.2.0,snapshot-3.0.0"
+    "sha256:deadbeefcafef00d,2026-07-17T09:30:00+00:00,50.0,0.2.0,snapshot-4.0.0"
 )

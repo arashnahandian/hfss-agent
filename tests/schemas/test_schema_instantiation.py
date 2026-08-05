@@ -85,7 +85,7 @@ def test_contract_version_literal_is_pinned() -> None:
     # literal, so a stray edit to the constant would flow through and pass every
     # other test silently. This one pin is what makes a change to the schema
     # version space loud — bumping it here is the deliberate, reviewed act.
-    assert CONTRACT_VERSION == "snapshot-3.0.0"
+    assert CONTRACT_VERSION == "snapshot-4.0.0"
 
 
 def _snapshot(variation: Variation) -> DesignSnapshot:
@@ -195,8 +195,31 @@ def test_finding_instantiates(valid_finding_kwargs: dict[str, Any]) -> None:
 
 def test_provenance_record_instantiates(provenance: ProvenanceRecord) -> None:
     assert provenance.variation.values["freq"] == "2.4GHz"
-    assert provenance.engine_version is None
-    assert provenance.rule_version is None
+    # Exactly the thirteen fields, and NO OPTIONAL AMONG THEM. This pin arrives
+    # with the removal of ``engine_version``/``rule_version`` at Step 2.6a, and it
+    # replaces two assertions that they defaulted to None — which is the whole
+    # defect: they defaulted to None forever, because no producer could fill
+    # either. The three sibling provenance types have carried a pin like this
+    # since they were split off; this one was the last without.
+    #
+    # RESTORING EITHER FIELD IS EXACTLY THE EDIT THIS CATCHES. Both look
+    # "obviously missing" to anyone who meets ``FindingProvenance.engine_version``
+    # one class down and does not read why it is honest there and was not here.
+    assert set(ProvenanceRecord.model_fields) == {
+        "project",
+        "design",
+        "solution_type",
+        "setup",
+        "sweep",
+        "variation",
+        "expression",
+        "reference_impedance",
+        "solve_timestamp",
+        "freshness_status",
+        "snapshot_id",
+        "contract_version",
+        "wrapper_version",
+    }
 
 
 def test_inspection_provenance_instantiates(
@@ -243,9 +266,12 @@ def test_finding_provenance_instantiates(
     assert finding_provenance.engine_version is None
     # Exactly the ten fields. The pin mirrors the two above and carries the same
     # job, plus one this type needs more than they do: five fields were DROPPED
-    # from ProvenanceRecord to build it (expression, reference_impedance,
-    # solve_timestamp, freshness_status, rule_version) and two more were
-    # deliberately not added (evaluated_at, evaluated_under_aedt_version). Each
+    # from ProvenanceRecord AS IT STOOD AT ADR-30 to build it (expression,
+    # reference_impedance, solve_timestamp, freshness_status, rule_version) and
+    # two more were deliberately not added (evaluated_at,
+    # evaluated_under_aedt_version). Four of those five are still on
+    # ProvenanceRecord today; ``rule_version`` is not, because Step 2.6a went on
+    # to remove it there too once this type took its only producer. Each
     # is exactly the kind of field a later change would restore as "obviously
     # missing", and every one of them would re-introduce a claim a judgment
     # cannot earn. Restoring one is a visible diff on this line, not a quiet

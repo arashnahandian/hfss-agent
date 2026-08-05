@@ -46,8 +46,10 @@ def provenance(variation: Variation) -> ProvenanceRecord:
         snapshot_id="snap-001",
         contract_version=CONTRACT_VERSION,
         wrapper_version="0.0.0",
-        # engine_version / rule_version deliberately omitted: a metric has
-        # neither, and they are optional.
+        # Every field of the type, with none omitted — ``engine_version`` and
+        # ``rule_version`` were REMOVED at Step 2.6a rather than left optional and
+        # empty, so there is nothing left here to leave out. This type now has no
+        # optional at all.
     )
 
 

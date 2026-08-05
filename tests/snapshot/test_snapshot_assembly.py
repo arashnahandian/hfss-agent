@@ -110,11 +110,13 @@ def test_the_intent_is_carried_when_one_is_supplied() -> None:
 def test_contract_version_is_the_imported_constant_not_a_literal() -> None:
     """Asserted against the IMPORTED constant, never against its current value.
 
-    A test spelling ``"snapshot-3.0.0"`` here would pass whether the assembler
-    imported the constant or hardcoded the same string, so it could not
-    distinguish the two — and the whole point is that the value lives in one
-    place. ``tests/schemas/test_schema_instantiation.py`` owns the pin on the
-    literal itself.
+    A test spelling the literal here would pass whether the assembler imported
+    the constant or hardcoded the same string, so it could not distinguish the
+    two — and the whole point is that the value lives in one place.
+    ``tests/schemas/test_schema_instantiation.py`` owns the pin on the literal
+    itself. (This sentence named ``"snapshot-3.0.0"`` until Step 2.6a bumped the
+    constant past it — an illustration that has to be re-edited on every schema
+    major is the rot the sentence is warning about, so it names none now.)
     """
     snapshot = assemble_snapshot(**inputs())  # type: ignore[arg-type]
     assert snapshot.contract_version == CONTRACT_VERSION

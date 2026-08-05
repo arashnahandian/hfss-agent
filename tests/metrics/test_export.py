@@ -49,7 +49,7 @@ def test_header_block_is_exact() -> None:
         "! solve_timestamp: 2026-07-17T09:30:00+00:00\n"
         "! reference_impedance_ohm: 50.0\n"
         "! wrapper_version: 0.2.0\n"
-        "! contract_version: snapshot-3.0.0\n"
+        "! contract_version: snapshot-4.0.0\n"
         "# HZ S RI R 50.0\n"
     )
 

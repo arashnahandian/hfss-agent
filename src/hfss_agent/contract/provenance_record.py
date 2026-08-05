@@ -29,22 +29,61 @@ class ProvenanceRecord(StrictModel):
     exact variation it was produced under — no need to reach back into the
     snapshot to know which point in the design space a value belongs to.
 
-    ``engine_version`` and ``rule_version`` HAVE NO PRODUCER LEFT, and ADR-30
-    created that state rather than finding it. The engine-rule finding was this
-    type's third carrier and the only case that ever filled them; that case moved
-    to ``FindingProvenance``. What remains is ``MetricRecord`` and
-    ``SolveHealthReport`` — neither has an engine or a supplemental rule behind
-    it, and neither is something an engine can produce, because the seam is
+    ``engine_version`` AND ``rule_version`` WERE REMOVED AT STEP 2.6a. The
+    tombstone stays because records stamped ``snapshot-3.0.0`` or earlier still
+    carry both slots, and a reader meeting one needs to know they were dropped
+    rather than never existing.
+
+    SUCH A RECORD IS REFUSED, NOT SILENTLY STRIPPED — the consequence worth
+    stating, because "the fields are gone" and "the old record no longer
+    validates" are different facts. This type is ``extra="forbid"`` like every
+    contract schema, so validating a ``snapshot-3.0.0`` payload against this shape
+    raises a ``ValidationError`` naming both keys, one ``extra_forbidden`` error
+    each. Measured against this schema, not inferred from the config.
+
+    THAT IS INTENDED, and it is what makes the version rule enforceable at all.
+    ``contract_version`` is a plain ``str`` that no code in this package compares,
+    so if the two keys were merely ignored, a 3.0.0 record would validate clean
+    under 4.0.0 while still CLAIMING to be 3.0.0 — exactly the "stamped record
+    claiming a schema version whose shape it no longer has" that the second clause
+    of ``common.py``'s version arithmetic exists to prevent. The refusal is the
+    only mechanism that catches the mismatch. Nothing in this package
+    deserializes a ``ProvenanceRecord`` (the adapter's sanitizer re-validates
+    against the same current type, so it cannot present a stale shape), so the
+    refusal has no inbound path here at all: it bites an external consumer
+    replaying an old record, which is precisely who should hear about it loudly.
+
+    ADR-30 created the state that forced it rather than finding it: the
+    engine-rule finding was this type's third carrier and the only case that ever
+    filled them, and that case moved to ``FindingProvenance``. What remained was
+    ``MetricRecord`` and ``SolveHealthReport`` — derived and pinned rather than
+    recalled (``test_provenance_record_has_exactly_two_carriers``) — and neither
+    can have an engine or a supplemental rule behind it, because the seam is
     ``evaluate(DesignSnapshot) -> list[Finding]`` and nothing crossing it is a
     metric or a solve-health readout.
 
-    By the rule written at ``FindingProvenance.engine_version`` — an optional is
-    honest when one producer fills it and another genuinely cannot, and dishonest
-    when none can — both fields should now be REMOVED. That is a field deletion
-    on a ``contract_version``-carrying type, which is a decision in its own right
-    rather than a side effect of a retype, so it is stated here and taken
-    separately. Until it is, read an empty value in either slot as "this slot has
-    no producer", never as "a producer looked and found nothing".
+    That left two optionals NO producer could fill, which the rule written at
+    ``FindingProvenance.engine_version`` calls dishonest in as many words: an
+    optional is honest when one producer fills it and another genuinely cannot,
+    and dishonest when none can, because the slot then advertises a capability
+    that does not exist. An empty value read as "a producer looked and found
+    nothing" when the truth was "no producer exists".
+
+    TAKEN INSIDE A SCHEMA MAJOR THAT WAS MOVING ANYWAY. Deleting a field from a
+    ``contract_version``-carrying type is breaking for an exhaustive consumer, so
+    it was held back from the ADR-30 retype rather than smuggled in as a side
+    effect of it. ``snapshot-4.0.0`` is the first major since, and doing it here
+    costs no version event at all; declining would have forced a second major
+    later for two fields nobody filled.
+
+    A SUPPLEMENTAL RULE BEHIND A COMPUTED VALUE IS NOW INEXPRESSIBLE HERE — the
+    honest consequence, not an oversight. Tier 1 metrics come from this package's
+    open formulas and cite them in ``MetricRecord.formula_ref``; no supplemental
+    rule stands behind one. If a rule ever does back a computed value, that is a
+    new capability and earns its own contract event, which is the right cost for a
+    change that size. The two spellings meant DIFFERENT things and still do:
+    ``Finding.rule_version`` is the version of the rule that PRODUCED a finding,
+    is required, and is untouched by this.
 
     NEITHER NATIVE VALIDATION NOR A FINDING IS AMONG THE CASES THIS TYPE COVERS,
     and each has its own type for its own reason. ``NativeValidationProvenance``
@@ -69,8 +108,6 @@ class ProvenanceRecord(StrictModel):
     snapshot_id: str
     contract_version: str
     wrapper_version: str
-    engine_version: str | None = None
-    rule_version: str | None = None
 
 
 class InspectionProvenance(StrictModel):
@@ -231,12 +268,14 @@ class FindingProvenance(StrictModel):
         three gates it is an unearned claim. It is also absent on the arm above.
       * ``rule_version`` — ``Finding.rule_version`` is required and already
         carries it, and two homes for one fact is the drift the charter above
-        exists to prevent. Note that the two spellings meant DIFFERENT things:
-        ``ProvenanceRecord.rule_version`` is the SUPPLEMENTAL rule behind a
+        exists to prevent. The two spellings meant DIFFERENT things, which is why
+        dropping this resolved a collision rather than losing a field:
+        ``ProvenanceRecord.rule_version`` was the SUPPLEMENTAL rule behind a
         computed value, while ``Finding.rule_version`` is the version of the rule
-        that produced the finding. A gate owns the second and never the first,
-        which is why dropping this resolves a collision rather than losing a
-        field.
+        that PRODUCED the finding, and a gate owns the second and never the
+        first. ``ProvenanceRecord``'s spelling was itself REMOVED later in Step
+        2.6a — see that class's tombstone — once this type took its only
+        producer, so the collision no longer exists in either direction.
       * ``evaluated_under_aedt_version`` — NOT ADDED, unlike both sibling types,
         which carry one. Their acts are version-situated: ``ValidateDesign``'s
         BEHAVIOUR differs across AEDT versions, and a structural read happens
