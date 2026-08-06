@@ -46,6 +46,7 @@ from hfss_agent.contract.finding import Applicability, Finding
 from hfss_agent.contract.intent_object import IntentObject
 from hfss_agent.contract.metric_record import MetricRecord
 from hfss_agent.contract.provenance_record import (
+    FindingProvenance,
     InspectionProvenance,
     NativeValidationProvenance,
     ProvenanceRecord,
@@ -97,4 +98,7 @@ __all__ = [
     # Provenance for a native validation run, which has neither a solve nor a
     # calculation of ours behind it (ADR-23)
     "NativeValidationProvenance",
+    # Provenance for a judgment — a gate result or an engine rule — which reads
+    # a snapshot rather than computing from a solve (ADR-30)
+    "FindingProvenance",
 ]

@@ -4,7 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hfss-agent"
-version = "0.4.0"
+# Surfaced as ``wrapper_version`` on every stamped record. MOVES INDEPENDENTLY of
+# CONTRACT_VERSION (ADR-21 dec. 10) — 0.5.0 beside snapshot-4.0.0 is correct, not
+# drift. Minor, because under 0.x the minor IS the breaking increment, and Step
+# 2.6a is breaking for a tool-surface consumer three ways over: the fourth
+# compute_metrics arm, the target_frequency -> target_frequency_hz rename, and
+# the retype of Finding.provenance. Same rule as the 0.2.0 -> 0.3.0 and
+# 0.3.0 -> 0.4.0 bumps; see contract/common.py for the full arithmetic.
+version = "0.5.0"
 description = "Open capability wrapper for a verification-first MCP agent for Ansys HFSS (read-only, attach-only, zero-egress)."
 readme = "README.md"
 # Python pin held deliberately at 3.10-3.12 per ADR-13 (not PyAEDT's wider

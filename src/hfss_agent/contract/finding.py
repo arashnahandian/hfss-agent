@@ -24,7 +24,7 @@ from hfss_agent.contract.common import (
     FindingSource,
     StrictModel,
 )
-from hfss_agent.contract.provenance_record import ProvenanceRecord
+from hfss_agent.contract.provenance_record import FindingProvenance
 
 
 class Applicability(StrictModel):
@@ -32,7 +32,7 @@ class Applicability(StrictModel):
     Finding — Honesty).
 
     Variation is not duplicated here: the finding's variation travels through
-    its ``provenance`` (ProvenanceRecord.variation).
+    its ``provenance`` (FindingProvenance.variation).
     """
 
     conditions: dict[str, Any]
@@ -76,5 +76,9 @@ class Finding(StrictModel):
     # risk tiers, never from a finding directly.
     suggested_action: str | None = None
 
-    provenance: ProvenanceRecord
+    # NOT a ``ProvenanceRecord`` (ADR-30). Both sources of a finding judge a
+    # snapshot rather than computing from a solve, so neither can fill that
+    # type's ``expression`` or ``reference_impedance`` — and neither field has
+    # any source in ``DesignSnapshot`` to begin with. See ``FindingProvenance``.
+    provenance: FindingProvenance
     template_text: str  # deterministic core text, complete without any LLM

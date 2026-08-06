@@ -13,6 +13,7 @@ import pytest
 from hfss_agent.contract import (
     CONTRACT_VERSION,
     Applicability,
+    FindingProvenance,
     InspectionProvenance,
     NativeValidation,
     NativeValidationProvenance,
@@ -45,8 +46,33 @@ def provenance(variation: Variation) -> ProvenanceRecord:
         snapshot_id="snap-001",
         contract_version=CONTRACT_VERSION,
         wrapper_version="0.0.0",
-        # engine_version / rule_version deliberately omitted: a gate finding has
-        # neither, and they are optional.
+        # Every field of the type, with none omitted — ``engine_version`` and
+        # ``rule_version`` were REMOVED at Step 2.6a rather than left optional and
+        # empty, so there is nothing left here to leave out. This type now has no
+        # optional at all.
+    )
+
+
+@pytest.fixture
+def finding_provenance(variation: Variation) -> FindingProvenance:
+    """Provenance for a JUDGMENT — no expression, no Z0, no solve fields.
+
+    Every value here is one a gate could read off a ``DesignSnapshot`` under
+    EITHER arm of ``solve_state``, which is the property the type exists for: a
+    never-solved design is an ordinary case, and a gate must be able to report
+    on one. ``engine_version`` is deliberately omitted — this stands for a gate
+    result, and a gate has no engine behind it.
+    """
+    return FindingProvenance(
+        project="patch_antenna",
+        design="HFSSDesign1",
+        solution_type="DrivenModal",
+        setup="Setup1",
+        sweep="Sweep1",
+        variation=variation,
+        snapshot_id="snap-001",
+        contract_version=CONTRACT_VERSION,
+        wrapper_version="0.0.0",
     )
 
 
@@ -90,7 +116,7 @@ def native_validation_provenance() -> NativeValidationProvenance:
 
 
 @pytest.fixture
-def valid_finding_kwargs(provenance: ProvenanceRecord) -> dict[str, Any]:
+def valid_finding_kwargs(finding_provenance: FindingProvenance) -> dict[str, Any]:
     """A complete, valid Finding keyword set.
 
     ``suggested_action`` is intentionally absent (it is the one optional field),
@@ -114,6 +140,6 @@ def valid_finding_kwargs(provenance: ProvenanceRecord) -> dict[str, Any]:
         "limitations_and_assumptions": "Assumes PyAEDT reported solution "
         "presence accurately for the selection.",
         "applicability": Applicability(conditions={"has_setup": True}, held=True),
-        "provenance": provenance,
+        "provenance": finding_provenance,
         "template_text": "[gate] solution_exists: pass",
     }

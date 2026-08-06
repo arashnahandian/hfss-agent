@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from hfss_agent.contract import Finding
+from hfss_agent.contract import Finding, ProvenanceRecord
 
 # All 16 required fields of Finding. The first fourteen are §2's seven evidence
 # groups flattened; provenance and template_text are required too (no default,
@@ -96,6 +96,45 @@ def test_finding_rejects_hfss_native_source_so_no_engine_finding_can_claim_it(
         Finding(**kwargs)
 
     assert "source" in str(excinfo.value)
+
+
+def test_finding_rejects_a_provenance_record(
+    valid_finding_kwargs: dict[str, Any], provenance: ProvenanceRecord
+) -> None:
+    """A judgment may not borrow a computed value's provenance (ADR-30).
+
+    WHAT THIS CATCHES THAT THE FIELD-SET PIN DOES NOT. The pin in
+    ``test_schema_instantiation`` guards FindingProvenance's SHAPE. This guards
+    the ANNOTATION on ``Finding.provenance``: widening it to
+    ``FindingProvenance | ProvenanceRecord`` — a live option that was weighed and
+    rejected, so a future contributor may well reach for it — leaves the pin
+    green and makes this fail. Those are two different defects and neither test
+    sees the other's.
+
+    The dict form is the realistic one: findings arrive across the
+    ``evaluate(DesignSnapshot) -> list[Finding]`` seam as data, so what must be
+    refused is a wire payload carrying the four solve-describing fields, not
+    just a mis-typed in-process object.
+    """
+    kwargs = dict(valid_finding_kwargs)
+    kwargs["provenance"] = provenance.model_dump()
+
+    with pytest.raises(ValidationError) as excinfo:
+        Finding(**kwargs)
+
+    # The four fields a judgment cannot earn are exactly what makes it a
+    # ProvenanceRecord, so the rejection must name them rather than failing for
+    # some incidental reason. ALL FOUR ARE ASSERTED, not the first two: the pair
+    # splits along the ADR-30 argument, and covering one half would leave the
+    # other unevidenced. ``expression``/``reference_impedance`` have no source in
+    # a DesignSnapshot EVER; ``solve_timestamp``/``freshness_status`` have none
+    # whenever ``solve_state`` takes its ``SolveDataUnavailable`` arm — the
+    # never-solved case that is ordinary rather than exceptional.
+    message = str(excinfo.value)
+    assert "expression" in message
+    assert "reference_impedance" in message
+    assert "solve_timestamp" in message
+    assert "freshness_status" in message
 
 
 def test_finding_allows_missing_optional_suggested_action(

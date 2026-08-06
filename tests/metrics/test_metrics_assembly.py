@@ -156,6 +156,14 @@ def test_every_non_passing_outcome_refuses(outcome: str) -> None:
     caveat, so permitting on a warning would produce numbers whose qualification
     existed only in prose. The Finding still reaches the caller with its
     five-state outcome intact.
+
+    THAT REASON IS SUPERSEDED AS OF STEP 2.6a; WHAT THIS TEST ASSERTS IS NOT.
+    The fact still holds — ``MetricsComputed`` has no field able to carry a
+    caveat — but the inference no longer does, because
+    ``MetricsComputedWithCaveats`` now exists to carry one and its allow-list
+    admits ``warning``. THE ASSEMBLER HAS NOT MOVED TO IT; Step 2.6b is where
+    that happens, and this test is expected to be revised there rather than to
+    keep holding. Until then a warning genuinely does refuse and this pins it.
     """
     gates = four_gates_with("solution_exists", outcome)  # type: ignore[arg-type]
     result = compute_metrics(
