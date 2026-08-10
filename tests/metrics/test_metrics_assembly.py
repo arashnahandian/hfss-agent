@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+from typing import get_args
 
 import pytest
 from assembly_helpers import (
@@ -51,12 +52,19 @@ from assembly_helpers import (
 )
 
 from hfss_agent.broker import session_routed_specs
-from hfss_agent.contract import MetricRecord
-from hfss_agent.contract.tool_io import CannotEvaluate, MetricsComputed, MetricsRefused
+from hfss_agent.contract import FindingOutcome, MetricRecord
+from hfss_agent.contract.tool_io import (
+    GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION,
+    CannotEvaluate,
+    MetricsComputed,
+    MetricsComputedWithCaveats,
+    MetricsRefused,
+)
 from hfss_agent.metrics import (
     ALL_GATES_PASSED,
     AT_TARGET_METRICS,
     DB,
+    GATE_OUTCOME_THAT_PERMITS_COMPUTATION,
     HZ,
     IMPEDANCE_AT_TARGET_REACTANCE,
     IMPEDANCE_AT_TARGET_RESISTANCE,
@@ -67,6 +75,7 @@ from hfss_agent.metrics import (
     RESONANT_FREQUENCY,
     S11_AT_TARGET,
     S11_MIN,
+    SOME_GATES_HEDGED,
     VSWR_AT_TARGET,
     MetricsAssemblyError,
     compute_metrics,
@@ -134,43 +143,145 @@ def test_a_failing_gate_refuses_and_returns_no_numbers() -> None:
     assert not hasattr(result, "metrics")
 
 
-def test_insufficient_evidence_refuses_like_a_failure() -> None:
-    """§1.1: the freshness gate must be able to say "cannot determine", and that
-    must never read as a pass. This is the gate Neda flagged as the one most
-    likely to hit a PyAEDT limitation, so it gets its own named test rather than
-    riding along in the parametrized case below."""
+def test_insufficient_evidence_qualifies_rather_than_refusing() -> None:
+    """REWRITTEN AT STEP 2.6b. It asserted refusal; it now asserts the caveat.
+
+    §1.1 still requires the freshness gate to be able to say "cannot determine"
+    and requires that never to read as a pass — and it does not: the result lands
+    on ``MetricsComputedWithCaveats``, a distinct arm whose own ``outcome``
+    announces the caveat and whose ``qualifying_gates`` names it. What changed is
+    Neda's ruling (ADR-30 dec. 7), which turns on a fact this test's old version
+    predates: the real adapter reports freshness undeterminable UNCONDITIONALLY,
+    so refusing here meant no real design would ever show a number.
+
+    THE ASSERTIONS AVOID THE TRAP ADR-30 dec. 13 FOUND IN THIS TEST'S SIBLING.
+    That one matched a substring against a discriminator error whose message
+    enumerates every expected tag — and ``gates_failed`` contains ``"fail"``, so a
+    DIFFERENT arm's tag satisfied it. Nothing below does substring matching on an
+    arm name or an outcome: the arm is checked by ``isinstance``, the literal by
+    equality, and the refusal arm is excluded explicitly rather than by implication.
+    """
     gates = four_gates_with("freshness", "insufficient_evidence")
     result = compute_metrics(
         gates, RESONANT_AT_3GHZ, provenance_for(), intent_at(TARGET_3GHZ)
     )
-    assert isinstance(result, MetricsRefused)
-    assert result.failing_gates[0].outcome == "insufficient_evidence"
+    assert isinstance(result, MetricsComputedWithCaveats)
+    assert not isinstance(result, MetricsRefused)
+    assert result.outcome == "metrics_with_caveats"
+    assert result.metrics, "the whole point of the ruling is that numbers appear"
+    assert [finding.outcome for finding in result.qualifying_gates] == [
+        "insufficient_evidence"
+    ]
 
 
-@pytest.mark.parametrize("outcome", ["fail", "warning", "not_evaluated"])
-def test_every_non_passing_outcome_refuses(outcome: str) -> None:
-    """The allow-list, asserted across every non-passing outcome in the enum.
+@pytest.mark.parametrize("outcome", ["fail", "not_evaluated"])
+def test_a_failing_or_unrun_gate_still_refuses(outcome: str) -> None:
+    """HALF OF THE REWRITTEN ``test_every_non_passing_outcome_refuses``.
 
-    ``warning`` and ``not_evaluated`` are the two that could plausibly have been
-    read as permitting. They do not: ``MetricsComputed`` has no field to carry a
-    caveat, so permitting on a warning would produce numbers whose qualification
-    existed only in prose. The Finding still reaches the caller with its
-    five-state outcome intact.
+    These two are the ones that still refuse, and each for its own reason.
+    ``fail`` IS the core promise — a gate that ran and said no is the exact case
+    "no numbers on gate failure" was written for. ``not_evaluated`` refuses
+    because a gate that did not run produced no evidence, so there is nothing for
+    it to qualify a number WITH (ADR-30 dec. 10), and because it is the one
+    non-passing outcome no ruling covers — an unruled state refuses by default.
 
-    THAT REASON IS SUPERSEDED AS OF STEP 2.6a; WHAT THIS TEST ASSERTS IS NOT.
-    The fact still holds — ``MetricsComputed`` has no field able to carry a
-    caveat — but the inference no longer does, because
-    ``MetricsComputedWithCaveats`` now exists to carry one and its allow-list
-    admits ``warning``. THE ASSEMBLER HAS NOT MOVED TO IT; Step 2.6b is where
-    that happens, and this test is expected to be revised there rather than to
-    keep holding. Until then a warning genuinely does refuse and this pins it.
+    NO SUBSTRING MATCHING, per ADR-30 dec. 13; see the test above.
     """
     gates = four_gates_with("solution_exists", outcome)  # type: ignore[arg-type]
     result = compute_metrics(
         gates, RESONANT_AT_3GHZ, provenance_for(), intent_at(TARGET_3GHZ)
     )
     assert isinstance(result, MetricsRefused)
-    assert result.failing_gates[0].outcome == outcome
+    assert result.outcome == "gates_failed"
+    assert not hasattr(result, "metrics")
+    assert [finding.outcome for finding in result.failing_gates] == [outcome]
+
+
+@pytest.mark.parametrize("outcome", ["warning", "insufficient_evidence"])
+def test_a_hedging_gate_qualifies_the_numbers(outcome: str) -> None:
+    """THE OTHER HALF, and these two are exactly
+    ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``.
+
+    Both rest on a ruling rather than on a schema: ``warning`` on ADR-30 dec. 6
+    ("there should be a warning that solution didn't converge because result maybe
+    wrong" — AEDT warns and proceeds into the sweep, so we mirror the solver), and
+    ``insufficient_evidence`` on dec. 7. A regression to refusal on either would
+    silently restore the pre-2.6a behaviour of withholding numbers.
+    """
+    gates = four_gates_with("solution_exists", outcome)  # type: ignore[arg-type]
+    result = compute_metrics(
+        gates, RESONANT_AT_3GHZ, provenance_for(), intent_at(TARGET_3GHZ)
+    )
+    assert isinstance(result, MetricsComputedWithCaveats)
+    assert result.outcome == "metrics_with_caveats"
+    assert result.metrics
+    assert [finding.outcome for finding in result.qualifying_gates] == [outcome]
+
+
+def test_the_three_routes_partition_every_finding_outcome() -> None:
+    """GAP (iv), CLOSED — and reconciled str against frozenset EXPLICITLY.
+
+    ``tool_io`` exports ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION`` (a
+    ``frozenset[str]``) "because W-7 must route on the SAME list the schema
+    validates against"; W-7 holds ``GATE_OUTCOME_THAT_PERMITS_COMPUTATION`` (a
+    bare ``str``). ADR-30 named the divergence and nothing tested agreement.
+
+    W-7 NOW IMPORTS THE FROZENSET RATHER THAN COPYING IT, so the two cannot drift
+    — they are one object. What remains to assert is the RELATIONSHIP between the
+    frozenset and the single permitting string, which is not equality and cannot
+    be checked by asserting they "match": the permitting outcome must be OUTSIDE
+    the qualifying set (ADR-30 dec. 10 excludes ``pass`` deliberately), and the
+    three routes must partition ``FindingOutcome`` exactly — every member in one
+    route, no member in two.
+
+    A SIXTH MEMBER FAILS HERE, at the decision, which is what an allow-list is for.
+    """
+    permits = {GATE_OUTCOME_THAT_PERMITS_COMPUTATION}
+    qualifies = set(GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION)
+    all_outcomes = set(get_args(FindingOutcome))
+    refuses = all_outcomes - permits - qualifies
+
+    # The exclusion ADR-30 dec. 10 makes deliberately, asserted rather than assumed.
+    assert GATE_OUTCOME_THAT_PERMITS_COMPUTATION not in qualifies
+    # No member is in two routes.
+    assert permits & qualifies == set()
+    assert permits & refuses == set()
+    assert qualifies & refuses == set()
+    # And together they are exactly the enum, with each route's membership pinned.
+    assert permits | qualifies | refuses == all_outcomes
+    assert permits == {"pass"}
+    assert qualifies == {"warning", "insufficient_evidence"}
+    assert refuses == {"fail", "not_evaluated"}
+
+
+def test_no_gate_status_literal_is_a_prefix_of_another() -> None:
+    """The collision ADR-30 dec. 11 removed between arm literals, kept removed here.
+
+    ``all_gates_passed_with_caveats`` was the obvious spelling for the caveated
+    record's status and would have had ``all_gates_passed`` as a proper prefix —
+    so a consumer routing by prefix would read a caveated record as a clean one.
+    ``some_gates_hedged`` shares no prefix in either direction.
+
+    DERIVED OVER THE PAIR rather than asserted about one, so a third status cannot
+    reintroduce the collision from the other side. The negative control is the
+    rejected candidate itself: the same scan finds the collision it would create.
+    """
+    statuses = [ALL_GATES_PASSED, SOME_GATES_HEDGED]
+    assert not [
+        (shorter, longer)
+        for shorter in statuses
+        for longer in statuses
+        if shorter != longer and longer.startswith(shorter)
+    ]
+    # The scan really can see a collision -- shown on the candidate that was
+    # rejected for having one, so this is not passing by looking at nothing.
+    rejected = [ALL_GATES_PASSED, "all_gates_passed_with_caveats"]
+    assert [
+        (shorter, longer)
+        for shorter in rejected
+        for longer in rejected
+        if shorter != longer and longer.startswith(shorter)
+    ] == [(ALL_GATES_PASSED, "all_gates_passed_with_caveats")]
 
 
 def test_no_gate_results_refuses() -> None:
@@ -881,3 +992,175 @@ def test_the_assembly_error_is_not_one_of_its_siblings() -> None:
     assert not issubclass(MetricsAssemblyError, NativeValidationAssemblyError)
     assert not issubclass(InspectionAssemblyError, MetricsAssemblyError)
     assert not issubclass(NativeValidationAssemblyError, MetricsAssemblyError)
+
+
+# --- 8. the caveated arm: the stamp, the notice, and the mixed cases ---------
+
+
+def _caveated(outcome: str = "warning", name: str = "convergence"):
+    """One caveated result on the nominal fixture, narrowed at the call site."""
+    result = compute_metrics(
+        four_gates_with(name, outcome),  # type: ignore[arg-type]
+        RESONANT_AT_3GHZ,
+        provenance_for(),
+        intent_at(TARGET_3GHZ),
+    )
+    assert isinstance(result, MetricsComputedWithCaveats), result
+    return result
+
+
+def test_a_caveated_record_is_not_stamped_all_gates_passed() -> None:
+    """D-A. ``all_gates_passed`` here would be a FALSE CLAIM IN A TYPED FIELD.
+
+    ``gate_status_at_computation`` is what a record asserts about the gates behind
+    its number. On this arm a gate hedged, so the clean stamp would be untrue in a
+    MACHINE-READABLE slot — worse than untrue in prose, because nothing downstream
+    can tell. The field is a plain ``str`` on ``MetricRecord`` with no ``Literal``,
+    so the schema cannot catch this; only an assertion can.
+
+    BOTH DIRECTIONS, because asserting only the new value would pass if the stamp
+    became a third unrelated string.
+    """
+    result = _caveated()
+    assert result.metrics
+    for record in result.metrics:
+        assert record.gate_status_at_computation == SOME_GATES_HEDGED
+        assert record.gate_status_at_computation != ALL_GATES_PASSED
+
+
+def test_the_clean_arm_still_stamps_all_gates_passed() -> None:
+    """The other half of D-A: the pre-2.6b behaviour is unchanged where it applies.
+
+    Without this, a bug that stamped ``some_gates_hedged`` everywhere would pass
+    the test above and lose the distinction entirely.
+    """
+    for record in _computed().metrics:
+        assert record.gate_status_at_computation == ALL_GATES_PASSED
+
+
+def test_the_caveat_notice_is_rendered_on_top() -> None:
+    """D-B. NEDA'S RULING CHOSE THE POSITION, not just the presence.
+
+    Her option text: "Show the numbers, with a clear notice ON TOP". A caveat
+    appended below the values is read after the reader has already taken them in,
+    which is the opposite of what she chose — so this asserts an ORDERING, not a
+    substring. ``_template_text`` previously appended every notice at the bottom.
+
+    THE INDEX ASSERTIONS ARE THE TEST. A ``in result.template_text`` check would
+    pass with the notice appended last, which is exactly the quiet non-compliance
+    this is written to prevent.
+    """
+    lines = _caveated().template_text.splitlines()
+    heading = next(
+        index for index, line in enumerate(lines) if line.startswith("READ THIS")
+    )
+    header = next(
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("Metrics for project")
+    )
+    values = next(
+        index for index, line in enumerate(lines) if line.startswith("Computed from")
+    )
+    assert heading == 0, "the caveat must be the FIRST thing rendered"
+    assert heading < header < values
+    # The hedging gate is named in the notice, so the reader learns WHICH check
+    # could not vouch for the numbers rather than only that one could not.
+    assert any("gate.convergence" in line for line in lines[:header])
+
+
+def test_the_clean_arm_renders_no_caveat_notice() -> None:
+    """The narrowing half: a clean result must not carry a caveat heading.
+
+    Without this, prepending the notice unconditionally would satisfy the ordering
+    test above while telling every user their numbers were qualified.
+    """
+    text = _computed().template_text
+    assert "READ THIS" not in text
+    assert text.splitlines()[0].startswith("Metrics for project")
+
+
+def test_the_caveated_header_does_not_claim_all_gates_passed() -> None:
+    """The prose that became FALSE, pinned so it cannot come back.
+
+    The old header read "All N gate result(s) supplied passed" unconditionally.
+    On this arm that is false, and it is the dangerous kind of false: stated in
+    the same breath as a true count, so a reader trusts it.
+    """
+    text = _caveated().template_text
+    assert "gate result(s) supplied passed" not in text
+    assert "did NOT pass and qualify the values above" in text
+    # The completeness disclaimer survives on both arms -- W-7's inability to
+    # confirm the set of four does not depend on how the gates came out.
+    assert "complete set of four gates" in text
+    assert "complete set of four gates" in _computed().template_text
+
+
+def test_a_mix_of_passes_and_hedges_carries_only_the_hedges() -> None:
+    """MIXED CASE 1. ``qualifying_gates`` holds the hedgers, never the passes.
+
+    ADR-30 dec. 10 excludes ``pass`` from the allow-list precisely so this arm
+    cannot be filled with passing gates — "a result announcing a caveat in its own
+    ``outcome`` and naming none". Two passes and two different hedges here, so the
+    test would notice either a pass leaking in or a hedge being dropped.
+    """
+    gates = [
+        gate("solution_exists", "pass"),
+        gate("convergence", "warning"),
+        gate("freshness", "insufficient_evidence"),
+        gate("target_coverage", "pass"),
+    ]
+    result = compute_metrics(
+        gates, RESONANT_AT_3GHZ, provenance_for(), intent_at(TARGET_3GHZ)
+    )
+    assert isinstance(result, MetricsComputedWithCaveats)
+    assert [finding.rule_id for finding in result.qualifying_gates] == [
+        "gate.convergence",
+        "gate.freshness",
+    ]
+    assert "pass" not in {finding.outcome for finding in result.qualifying_gates}
+
+
+def test_a_fail_beside_a_warning_refuses_and_echoes_both() -> None:
+    """MIXED CASE 2. REFUSAL WINS, and ``failing_gates`` keeps the hedger too.
+
+    Echoing only the ``fail`` would tell a reader less than the current output
+    does: they would see the gate that said no without seeing that convergence
+    also stopped short. ``MetricsRefused.failing_gates``' own docstring already
+    records that its name is a mild misnomer for a warning, with each Finding's
+    five-state ``outcome`` carrying the exact truth — so the imprecision is in one
+    field name and the information is not lost.
+    """
+    gates = [
+        gate("solution_exists", "pass"),
+        gate("convergence", "warning"),
+        gate("freshness", "fail"),
+        gate("target_coverage", "insufficient_evidence"),
+    ]
+    result = compute_metrics(
+        gates, RESONANT_AT_3GHZ, provenance_for(), intent_at(TARGET_3GHZ)
+    )
+    assert isinstance(result, MetricsRefused)
+    assert [finding.rule_id for finding in result.failing_gates] == [
+        "gate.convergence",
+        "gate.freshness",
+        "gate.target_coverage",
+    ]
+    assert not hasattr(result, "metrics")
+
+
+def test_the_refusal_notice_states_the_new_policy() -> None:
+    """The refusal text's closing notice, which also became FALSE at 2.6b.
+
+    It said "warning" and "insufficient_evidence" refuse. They do not. A reader of
+    a refusal needs the policy stated correctly, or they will not understand why a
+    DIFFERENT design got numbers under a warning.
+    """
+    gates = four_gates_with("solution_exists", "fail")
+    result = compute_metrics(
+        gates, RESONANT_AT_3GHZ, provenance_for(), intent_at(TARGET_3GHZ)
+    )
+    assert isinstance(result, MetricsRefused)
+    assert 'is "fail" or' in result.template_text
+    assert "does NOT refuse" in result.template_text
+    assert "QUALIFY the numbers instead" in result.template_text

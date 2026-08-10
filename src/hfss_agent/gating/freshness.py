@@ -127,6 +127,33 @@ RULE_PURPOSE = (
     "design as it now stands."
 )
 
+# NEDA'S WORDING, LIFTED FROM THE OPTION SHE CHOSE (ADR-30 dec. 7) AND NOT
+# PARAPHRASED. ADR-30 dec. 22's standing rule is that a domain expert must be
+# addressed in HFSS terms rather than in this codebase's vocabulary; the same rule
+# applies in reverse when her answer becomes user-facing text. "Check the Message
+# Manager and the report icons in the Project Manager" is the practically useful
+# half of her ruling -- it tells an engineer WHERE TO LOOK in AEDT, which no
+# wording of ours was going to reproduce.
+#
+# WHY IT LIVES IN ``reason_flagged`` AND NOWHERE ELSE. Traced end to end rather
+# than assumed: W-7's caveat block renders exactly three fields of a qualifying
+# Finding -- ``rule_id``, ``outcome`` and ``reason_flagged``.
+# ``limitations_and_assumptions``, the Finding's own ``template_text``,
+# ``rule_purpose``, ``calculation_ref`` and ``finding_id`` do NOT reach that
+# surface. Putting her guidance in ``limitations_and_assumptions`` as well would
+# be two homes for one fact, and the one a user actually reads is this one.
+#
+# THE ONE ADAPTATION, stated because a quote should be flagged when it is not
+# byte-exact: her em-dash is rendered as ASCII ``--``. Measured, not assumed --
+# there are zero em-dashes and five ASCII ``--`` in the runtime strings of
+# ``gating`` and ``metrics``, so this follows the convention of the text it will
+# be rendered beside. No word is changed.
+_CURRENCY_NOTICE = (
+    "We could not confirm these results are current -- we cannot tell whether "
+    "this design was changed after it was solved. Check the Message Manager and "
+    "the report icons in the Project Manager before trusting these."
+)
+
 LIMITATIONS = (
     "The decision rests on FreshnessEvidence.determinable ALONE. "
     "available_signals has no key vocabulary -- the contract states that "
@@ -221,12 +248,16 @@ def _from_solve_state(snapshot: DesignSnapshot, solve_state: SolveState) -> Find
             "determinable": evidence.determinable,
             "available_signals": dict(evidence.available_signals),
         },
+        # HER WORDS FIRST, our evidence detail demoted to a parenthetical after
+        # them. The order is not cosmetic: this string is rendered as one line of
+        # W-7's caveat block, and a reader who stops after the first sentence
+        # should already have the actionable half.
         reason_flagged=(
-            "Currency could not be confirmed. The snapshot reports "
+            f"{_CURRENCY_NOTICE} (The snapshot reports "
             f"determinable={evidence.determinable} for freshness, and the "
             "wrapper has no field able to carry a design-modified-since-solve "
             "determination, so no currency verdict can be read from it. The "
-            "signals are reported as evidence and were not interpreted."
+            "signals are reported as evidence and were not interpreted.)"
         ),
         conditions={
             "solve_state_readable": True,
@@ -253,10 +284,18 @@ def _from_absence(
             "reason": solve_state.reason,
             "limitation": solve_state.limitation,
         },
+        # HER WORDS ON THIS ARM TOO, and the fit is worth stating rather than
+        # assuming. "We cannot tell whether this design was changed after it was
+        # solved" is true here for a STRONGER reason than on the arm above: there
+        # is no solve state at all, so there is not even evidence to be
+        # undeterminable about. The guidance is identical either way -- the
+        # Message Manager and the Project Manager report icons are where an
+        # engineer looks in both cases -- so splitting the wording would give a
+        # user two phrasings of one situation with no way to tell why.
         reason_flagged=(
-            "Currency could not be confirmed. The snapshot carries no solve "
-            "state, so there is no freshness evidence to read at all. The reason "
-            f"given is {solve_state.reason!r}: {solve_state.limitation}"
+            f"{_CURRENCY_NOTICE} (The snapshot carries no solve state, so there "
+            "is no freshness evidence to read at all. The reason given is "
+            f"{solve_state.reason!r}: {solve_state.limitation})"
         ),
         conditions={
             "solve_state_readable": False,
