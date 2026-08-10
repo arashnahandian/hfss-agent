@@ -30,6 +30,7 @@ from gating_helpers import (
     round_tripped,
     snapshot,
     solve_state,
+    swept,
     unavailable,
     variation,
 )
@@ -1179,3 +1180,208 @@ def test_not_evaluated_is_unreachable_across_every_gate_and_input_shape() -> Non
     # anything: all four other members ARE produced across these shapes.
     assert seen == {"pass", "fail", "warning", "insufficient_evidence"}
     assert gating_common.NOT_EVALUATED_IS_UNREACHABLE_IN_GATING is True
+
+
+# --- 11. reason_flagged carries what `outcome` cannot ------------------------
+#
+# THE BAR THESE ARE WRITTEN TO. ``reason_flagged`` is one of only three Finding
+# fields that reach a user through W-7's caveat block (traced at Part 6b -- the
+# other two are ``rule_id`` and ``outcome``). So the property worth pinning is
+# precise: THE REASON MUST DISTINGUISH INPUTS THAT ``outcome`` CANNOT. If two
+# genuinely different situations produce the same outcome AND the same reason, a
+# reader has no way to tell them apart, and the field has failed at its only job.
+#
+# DIFFERENTIAL, NOT SUBSTRING. Every assertion below compares two reasons to each
+# other rather than to a literal. A REWORDING passes; a DROPPED FACT fails. That
+# is the difference between pinning a property and pinning prose, and it is why
+# these look different from ``test_freshness_never_claims_the_results_are_current``
+# -- a DISCLOSURE is worth pinning verbatim (the Part-6b precedent, where the
+# wording is a domain expert's and the words themselves are the deliverable);
+# an ordinary evidence sentence is not.
+
+
+def test_solution_exists_distinguishes_its_three_insufficient_causes() -> None:
+    """Three different failures, one outcome. Only the reason separates them.
+
+    An empty flag list, a list whose entries name a different setup, and two
+    entries claiming the same selection are three distinct situations that all
+    yield ``insufficient_evidence``. A reader who sees only the outcome cannot act
+    on any of them; the counts in the reason are what tell them whether the
+    adapter reported nothing, reported something irrelevant, or contradicted
+    itself.
+
+    WHAT WOULD HAVE TO CHANGE FOR THIS TO FAIL: the three reasons collapsing into
+    one generic sentence -- dropping either count, or replacing them with a fixed
+    "no determination was made". A reworded sentence that still carries both
+    counts passes, which is the point.
+    """
+    other = SolutionExists(
+        setup="SomeOtherSetup", sweep="Sweep1", variation=variation(), exists=True
+    )
+    causes = {
+        "empty": snapshot(solve_state=solve_state(entries=[])),
+        "no match": snapshot(solve_state=solve_state(entries=[other])),
+        "duplicate": snapshot(
+            solve_state=solve_state(
+                entries=[matching_entry(True), matching_entry(False)]
+            )
+        ),
+    }
+    findings = {
+        label: solution_exists.evaluate(snap) for label, snap in causes.items()
+    }
+    # Same outcome for all three -- which is what makes the reason load-bearing.
+    assert {f.outcome for f in findings.values()} == {"insufficient_evidence"}
+    reasons = [f.reason_flagged for f in findings.values()]
+    assert len(set(reasons)) == 3, (
+        "all three insufficient_evidence causes render the same reason, so a "
+        f"reader cannot tell them apart: {reasons}"
+    )
+
+
+def test_solution_exists_reports_the_flag_it_read() -> None:
+    """``pass`` and ``fail`` differ in outcome, so the reason must add something.
+
+    What it adds is WHICH entry was read: the reason must change when the matched
+    entry's ``exists`` flips, so the sentence describes the evidence rather than
+    restating the verdict.
+
+    WHAT WOULD HAVE TO CHANGE: the reason becoming a constant string per outcome,
+    i.e. saying nothing the outcome did not already say.
+    """
+    solved = solution_exists.evaluate(snapshot())
+    unsolved = solution_exists.evaluate(
+        snapshot(solve_state=solve_state(entries=[matching_entry(exists=False)]))
+    )
+    assert solved.outcome == "pass" and unsolved.outcome == "fail"
+    assert solved.reason_flagged != unsolved.reason_flagged
+
+
+def test_convergence_reports_how_many_passes_ran() -> None:
+    """Two solves, same status, different pass counts -- the reason must differ.
+
+    The pass count is the one piece of evidence a reader can act on when a solve
+    stopped short: two adaptive passes and nine are different situations with the
+    same ``warning``. Neda gave no delta-S threshold, so the count and the
+    progression are ALL the evidence this gate is permitted to offer.
+
+    WHAT WOULD HAVE TO CHANGE: the count being dropped from the sentence. Any
+    rewording that still reports it passes.
+    """
+    short = convergence.evaluate(
+        snapshot(solve_state=solve_state(pass_history=[{"p": 1}, {"p": 2}]))
+    )
+    long = convergence.evaluate(
+        snapshot(solve_state=solve_state(pass_history=[{"p": n} for n in range(9)]))
+    )
+    assert short.outcome == long.outcome == "pass"
+    assert short.reason_flagged != long.reason_flagged
+
+
+def test_convergence_reports_the_status_it_read() -> None:
+    """``converged`` and ``stopped`` must read differently beyond the outcome.
+
+    On ``stopped`` the reason also has to carry WHY it matters -- AEDT warns and
+    proceeds, so a reader needs to know the numbers exist but may be wrong. That
+    half is a disclosure rather than evidence, so it is the one substring pinned
+    here, on the Part-6b precedent.
+    """
+    converged = convergence.evaluate(snapshot())
+    stopped = convergence.evaluate(
+        snapshot(solve_state=solve_state(convergence_status="stopped"))
+    )
+    assert converged.reason_flagged != stopped.reason_flagged
+    assert "may be wrong" in stopped.reason_flagged
+    assert "may be wrong" not in converged.reason_flagged
+
+
+def test_target_coverage_reports_which_source_supplied_the_target() -> None:
+    """THE SAME FREQUENCY FROM TWO SOURCES. Identical outcome, identical value.
+
+    A user who set an intent and then passed an explicit argument cannot otherwise
+    tell which one was honoured -- and a ``Finding`` travels without the snapshot
+    beside it, so the reason is the only place that can say. This is the same
+    recoverability the ``observed_values`` disagreement fields exist for, asserted
+    on the field a human actually reads.
+
+    WHAT WOULD HAVE TO CHANGE: the source label being dropped from the sentence.
+    """
+    from_parameter = target_coverage.evaluate(snapshot(), 2.4e9)
+    from_intent = target_coverage.evaluate(snapshot(intent=intent(2.4e9)))
+    assert from_parameter.outcome == from_intent.outcome == "pass"
+    assert (
+        from_parameter.observed_values["target_frequency_hz"]
+        == from_intent.observed_values["target_frequency_hz"]
+    )
+    assert from_parameter.reason_flagged != from_intent.reason_flagged
+
+
+def test_target_coverage_reports_the_swept_bounds_it_tested_against() -> None:
+    """Same target, same verdict, different sweep -- the reason must differ.
+
+    "2.4 GHz is inside the sweep" is not actionable; "inside a sweep running
+    2.3-2.5 GHz" is, because it tells a reader how much margin they have and
+    whether the sweep covers what they care about. The bounds are also what makes
+    a ``fail`` diagnosable rather than merely negative.
+
+    WHAT WOULD HAVE TO CHANGE: the bounds being dropped. A rewording that still
+    reports them passes.
+    """
+    narrow = target_coverage.evaluate(
+        snapshot(solved_data=swept(2.3e9, 2.4e9, 2.5e9)), 2.4e9
+    )
+    wide = target_coverage.evaluate(
+        snapshot(solved_data=swept(1.0e9, 2.4e9, 6.0e9)), 2.4e9
+    )
+    assert narrow.outcome == wide.outcome == "pass"
+    assert narrow.reason_flagged != wide.reason_flagged
+
+
+def test_target_coverage_distinguishes_its_insufficient_causes() -> None:
+    """No target, an empty sweep, and no solved data all yield one outcome.
+
+    Three situations a user resolves three different ways -- supply a frequency,
+    re-run the sweep, or solve the design -- so the reason has to separate them.
+
+    WHAT WOULD HAVE TO CHANGE: the three collapsing into one sentence.
+    """
+    causes = {
+        "no target": target_coverage.evaluate(snapshot()),
+        "empty sweep": target_coverage.evaluate(
+            snapshot(solved_data=empty_solved_data()), 2.4e9
+        ),
+        "no solved data": target_coverage.evaluate(
+            snapshot(solved_data=unavailable("no_solution")), 2.4e9
+        ),
+    }
+    assert {f.outcome for f in causes.values()} == {"insufficient_evidence"}
+    reasons = [f.reason_flagged for f in causes.values()]
+    assert len(set(reasons)) == 3, reasons
+
+
+@pytest.mark.parametrize("gate_name", sorted(_GATES))
+def test_no_gate_leaves_reason_flagged_empty_or_equal_to_its_outcome(
+    gate_name: str,
+) -> None:
+    """The floor beneath all of the above, over every gate and every arm.
+
+    A reason that is blank, or that merely restates the outcome, carries nothing.
+    This is the assertion that would catch a NEW gate shipping without a real
+    sentence -- the differential tests above each cover one gate, and a fifth gate
+    would slip past all of them.
+    """
+    for snap in (
+        snapshot(),
+        snapshot(intent=intent(2.4e9)),
+        snapshot(solve_state=solve_state(convergence_status="stopped")),
+        snapshot(solve_state=solve_state(entries=[])),
+        snapshot(solve_state=unavailable("no_solution")),
+        snapshot(solved_data=unavailable("no_solution")),
+    ):
+        finding = _run(gate_name, snap)
+        reason = finding.reason_flagged.strip()
+        assert reason, f"{gate_name} left reason_flagged empty"
+        assert reason != finding.outcome
+        # A real sentence, not a token: the shortest genuine reason in the package
+        # is well over this, and a bare status word would not clear it.
+        assert len(reason) > 30, f"{gate_name} reason is not a sentence: {reason!r}"

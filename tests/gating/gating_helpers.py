@@ -197,6 +197,21 @@ def intent(target_frequency_hz: float = 2.4e9) -> IntentObject:
     )
 
 
+def swept(*frequencies: float) -> SolvedData:
+    """Solved data over an arbitrary frequency list, for varying the swept range.
+
+    The S-parameter series is filled to match length because ``SolvedData`` is
+    aligned index-for-index; its values are irrelevant to every gate (only
+    ``frequencies`` is read), so they are uniform rather than meaningful.
+    """
+    return SolvedData(
+        frequencies=list(frequencies),
+        s_parameters={
+            "S(1,1)": [ComplexSample(real=-0.1, imag=0.0) for _ in frequencies]
+        },
+    )
+
+
 def empty_solved_data() -> SolvedData:
     """A solved-data block that RAN and returned no samples.
 
