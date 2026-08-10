@@ -30,6 +30,7 @@ from hfss_agent.contract import (
     FreshnessEvidence,
     InspectionProvenance,
     InspectionSection,
+    IntentObject,
     NativeValidation,
     NativeValidationProvenance,
     Project,
@@ -180,6 +181,31 @@ def _environment() -> Environment:
         python_version="3.12.10",
         wrapper_version="0.0.0",
     )
+
+
+def intent(target_frequency_hz: float = 2.4e9) -> IntentObject:
+    """A design intent, for the target-coverage gate's fallback source.
+
+    ``threshold_type``/``threshold_value`` are required by the schema and are
+    deliberately NOT varied: evaluating a threshold is interpretation, which is
+    Step 2.11's, and no gate reads either field. Only the frequency matters here.
+    """
+    return IntentObject(
+        target_frequency_hz=target_frequency_hz,
+        threshold_type="s11",
+        threshold_value=-10.0,
+    )
+
+
+def empty_solved_data() -> SolvedData:
+    """A solved-data block that RAN and returned no samples.
+
+    Distinct from ``unavailable(...)``: this is a present ``SolvedData`` whose
+    ``frequencies`` list is empty, which the contract permits (no ``min_length``).
+    It is the shape that separates "no sweep to test against" from "no solved data
+    at all", and the two take different arms of ``DesignSnapshot.solved_data``.
+    """
+    return SolvedData(frequencies=[], s_parameters={})
 
 
 def _solved_data() -> SolvedData:

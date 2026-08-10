@@ -99,6 +99,44 @@ CLASSIFICATION_BY_OUTCOME: dict[FindingOutcome, FindingClassification] = {
     "insufficient_evidence": "warning",
 }
 
+# NO GATE IN THIS PACKAGE EMITS ``not_evaluated``. FOUR OF THE FIVE OUTCOMES ARE
+# REACHABLE ACROSS THE GATE SET, AND THAT IS COMPLETE RATHER THAN A GAP.
+#
+# RECORDED HERE, IN THE SHARED MODULE, AND THE PLACEMENT IS DELIBERATE. The map
+# directly above is the only place all five members are written out, so a reader
+# meeting the fifth is exactly the reader who will wonder why it never appears in
+# any output -- and will otherwise read a five-member enum with four reachable
+# members as an unfinished implementation. A note in ``target_coverage`` would
+# scope a package-wide fact to one gate; a note in ``gates.py`` would be invisible
+# to anyone reading a single gate. This is the one file all four import.
+#
+# WHY EACH GATE CANNOT EMIT IT, in one line each; the full reasoning is in each
+# module's own docstring:
+#   * solution_exists -- no precondition can be absent; ``selection`` is required
+#     on every snapshot and ``solve_state`` is present in one arm or the other.
+#   * convergence -- same; ``convergence_status`` is required on ``SolveState``,
+#     and the other arm is a REPORTED absence rather than a missing input.
+#   * freshness -- same; ``freshness_evidence`` is required on ``SolveState``.
+#   * target_coverage -- THE LAST CANDIDATE, and the only one where "the check did
+#     not run" was ever the honest English. No target from either source is
+#     genuinely a check that did not happen. Neda ruled that case shows numbers,
+#     so it emits ``insufficient_evidence`` instead, which is on
+#     ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION`` where ``not_evaluated`` is not.
+#
+# THE MEMBER STAYS IN ``FindingOutcome`` AND MUST NOT BE REMOVED. ``Finding`` has
+# a second producer coming: E-2's engine rules, whose applicability is genuinely
+# conditional -- a rule about a wave port has nothing to say about a design with
+# none, and ``not_evaluated`` is the honest report for that. What is unreachable
+# is not the member; it is the member FROM THIS PACKAGE.
+#
+# CONSEQUENCE WORTH KNOWING: ADR-30 dec. 10 excluded ``not_evaluated`` from the
+# qualifying allow-list partly because it is "the one non-passing outcome no ruling
+# covers". After Neda's target ruling that is still true, and the exclusion now
+# guards an EMPTY SET as far as gating is concerned. It is kept because the set
+# stops being empty the day E-2 lands, and because an allow-list that admits a
+# state no one has ruled on is the rot ADR-27 dec. 14 named.
+NOT_EVALUATED_IS_UNREACHABLE_IN_GATING = True
+
 
 def applicability(conditions: dict[str, object]) -> Applicability:
     """The applicability block, with ``held`` DERIVED from the conditions.
