@@ -81,8 +81,17 @@ from hfss_agent.contract import (
     SolvedData,
 )
 from hfss_agent.contract.tool_io import (
+    # IMPORTED, NOT COPIED, and that closes ADR-30's fourth open gap. ``tool_io``
+    # exports this "because W-7 must route on the SAME list the schema validates
+    # against" -- and until now W-7 held its own spelling instead, with nothing
+    # testing agreement. Two constants plus an agreement test would keep them
+    # merely equal; one object makes them identical, so the router and the
+    # ``MetricsComputedWithCaveats`` validator cannot disagree even in principle.
+    # §5 permits ``metrics -> contract``, so this needs no new grant.
+    GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION,
     ComputeMetricsResult,
     MetricsComputed,
+    MetricsComputedWithCaveats,
     MetricsRefused,
 )
 from hfss_agent.metrics.sparams import (
@@ -108,39 +117,34 @@ from hfss_agent.metrics.sparams import (
 # interpreted set is the approved list, which is why this is not).
 S11_KEY = "S(1,1)"
 
-# The only gate outcome that permits computation. An ALLOW-LIST, not a
-# deny-list, and the direction is the whole point: a deny-list would let a sixth
-# FindingOutcome added later default to PERMITTING, and the failure mode of that
-# mistake is numbers where there should be none -- the one thing this product
-# must never do. Everything that is not this string refuses.
+# The only gate outcome that permits the CLEAN arm. NOT a copy of
+# ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION`` and not in competition with it: that
+# frozenset holds the outcomes that QUALIFY numbers, and ``pass`` is deliberately
+# excluded from it (ADR-30 dec. 10 -- "a passing gate hedges nothing, and
+# admitting one would let this arm be filled entirely with passes"). The two are
+# complementary halves of one partition, and
+# ``test_the_three_routes_partition_every_finding_outcome`` pins that they and the
+# refusing remainder cover ``FindingOutcome`` exactly once each.
 #
-# Consequences worth knowing, both deliberate:
-#   * ``insufficient_evidence`` refuses. §1.1 requires the freshness gate to be
-#     able to say "cannot determine" and requires that never to read as a pass.
-#   * ``warning`` refuses too. ``MetricsComputed`` has no field to carry a
-#     caveat, so permitting on a warning would produce numbers whose
-#     qualification existed only in prose -- the exact "numbers without their
-#     caveat" shape the ComputeMetricsResult union was built to prevent. The
-#     warning Finding still reaches the caller with its five-state outcome
-#     intact, so nothing is hidden or relabelled; it travels in
-#     ``MetricsRefused.failing_gates``, whose name is a mild misnomer for it.
+# STILL AN ALLOW-LIST, and the direction is still the whole point: a sixth
+# ``FindingOutcome`` added later lands in the REFUSING remainder by default,
+# because it is named by neither this constant nor the imported frozenset. The
+# failure mode of the opposite arrangement is numbers where there should be none.
 #
-# THE TWO REASONS ABOVE ARE SUPERSEDED AS OF STEP 2.6a; THE BEHAVIOUR BELOW IS
-# NOT. Separating those is the point of this note. The FACT each bullet rests on
-# still holds -- ``MetricsComputed`` has no field able to carry a caveat, and
-# §1.1 still forbids "cannot determine" reading as a pass. The INFERENCE drawn
-# from it, that a hedging gate must therefore REFUSE, no longer follows: Step
-# 2.6a added ``MetricsComputedWithCaveats``, whose required ``qualifying_gates``
-# field carries the caveat structurally, and whose allow-list
-# (``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``) admits exactly ``warning`` and
-# ``insufficient_evidence`` -- these two. A caveated result is not a pass and
-# does not read as one, so §1.1 is satisfied by that arm rather than bypassed.
+# THE THREE-WAY PARTITION LANDED HERE AT STEP 2.6b, which ADR-25 dec. 10
+# pre-authorised at "a one-constant edit" and ADR-30 dec. 8 corrected. Both
+# estimates were low; the true cost was the routing, the record stamp, and the
+# rendered text, because the old behaviour was asserted in prose in a dozen places
+# that a constant change leaves silently false.
 #
-# THIS ASSEMBLER HAS NOT MOVED, and Step 2.6b is where it does. Until then the
-# constant below is unchanged and every non-passing outcome still refuses, which
-# ``test_every_non_passing_outcome_refuses`` pins. Read the two bullets as the
-# record of why the old behaviour was correct while ``MetricsComputed`` was the
-# only computed arm -- not as an argument that a warning deserves refusing.
+# WHAT SUPERSEDED WHAT, kept because the reasoning is still instructive. Before
+# 2.6a, ``warning`` and ``insufficient_evidence`` refused, and the reason was
+# sound: ``MetricsComputed`` has three fields and none can carry a qualification,
+# so permitting on a hedge would have produced numbers whose caveat existed only
+# in prose. That FACT still holds. The INFERENCE no longer follows, because
+# ``MetricsComputedWithCaveats`` now carries the caveat structurally in a required,
+# ``min_length=1`` field. §1.1's "never a silent pass" is satisfied by that arm
+# rather than bypassed: a caveated result is not a pass and does not read as one.
 GATE_OUTCOME_THAT_PERMITS_COMPUTATION = "pass"
 
 # Metric names, fixed here because they are what a downstream reader keys on.
@@ -205,16 +209,60 @@ NO_INTENT_REASON = (
 # cannot drift.
 ALL_GATES_PASSED = "all_gates_passed"
 
+# THE SIBLING FOR THE CAVEATED ARM, and it exists because the alternative is a
+# FALSE CLAIM IN A TYPED FIELD. ``gate_status_at_computation`` is what a record
+# asserts about the gates behind its number; stamping ``all_gates_passed`` on a
+# record whose freshness gate returned ``insufficient_evidence`` would be untrue in
+# a machine-readable slot, which is worse than untrue in prose because nothing
+# downstream can tell.
+#
+# THE SPELLING IS WIRE-VISIBLE AND IS CHOSEN, NOT DEFAULTED. Two candidates were
+# rejected:
+#
+#   * ``all_gates_passed_with_caveats`` -- REJECTED, and it is the obvious one.
+#     ``"all_gates_passed_with_caveats".startswith("all_gates_passed")`` is True,
+#     so any consumer routing by prefix would read a caveated record as a clean
+#     one. That is verbatim the collision ADR-30 dec. 11 REMOVED rather than
+#     documented between ``metrics_computed`` and ``metrics_computed_with_caveats``,
+#     and reintroducing it here would undo that decision one field over.
+#   * ``gates_qualified`` -- REJECTED on ADR-30 dec. 11's other finding: in an RF
+#     context "qualified" reads as CERTIFIED at least as loudly as HEDGED, because
+#     qualification is what a part passes. That is why ``MetricsQualified`` was not
+#     the arm's name, and the same word is no safer in a status string.
+#
+# ``some_gates_hedged`` shares no prefix with ``all_gates_passed`` in either
+# direction, parallels its quantifier-subject-verb shape, and uses the word
+# ``MetricsComputedWithCaveats``' own docstring uses for these gates.
+# ``test_no_gate_status_literal_is_a_prefix_of_another`` pins the non-collision
+# over both, so a third status cannot reintroduce it from either side.
+SOME_GATES_HEDGED = "some_gates_hedged"
+
 _NO_INTERPRETATION_NOTICE = (
     "Each value above is the output of the open formula named beside it, "
     "computed from the solved data as read. Nothing here is interpreted, "
     "compared against a design intent, or judged."
 )
 
-_ONLY_PASS_PERMITS_NOTICE = (
-    "Metrics are computed only when every gate result supplied is \"pass\"; "
-    "\"fail\", \"warning\", \"not_evaluated\" and \"insufficient_evidence\" all "
-    "refuse, and no numbers are reported for any of them."
+# WAS ``_ONLY_PASS_PERMITS_NOTICE`` UNTIL STEP 2.6b, and the rename is not
+# cosmetic: the old text stated that "warning" and "insufficient_evidence" refuse,
+# which became FALSE the moment the caveated arm acquired a producer. Renaming
+# rather than editing in place is deliberate -- the old name asserted the old
+# policy, so leaving it would have left a true sentence under a false label.
+_REFUSAL_POLICY_NOTICE = (
+    'Metrics are refused when any gate result supplied is "fail" or '
+    '"not_evaluated". A "warning" or an "insufficient_evidence" does NOT refuse: '
+    "those QUALIFY the numbers instead and are reported alongside them, under a "
+    "notice. No numbers are reported here because at least one gate did neither."
+)
+
+# THE CAVEAT HEADING, rendered at the TOP of a caveated result rather than
+# appended. Neda's ruling (ADR-30 dec. 7) chose "Show the numbers, with a clear
+# notice on top", and the POSITION was part of what she chose -- a caveat below
+# the numbers is read after the reader has already taken them in. See
+# ``_template_text`` for what moved to make room for it.
+_CAVEAT_HEADING = (
+    "READ THIS BEFORE TRUSTING THE NUMBERS BELOW. They were computed, but not "
+    "every validity gate could vouch for them:"
 )
 
 
@@ -224,8 +272,9 @@ class MetricsAssemblyError(Exception):
     RAISED, NOT RETURNED, and forced by the contract rather than chosen. The
     FOUR arms of ``ComputeMetricsResult`` are a populated ``MetricsComputed``,
     a ``MetricsComputedWithCaveats`` carrying numbers beside the gate results
-    that hedge them (added at Step 2.6a; no producer here yet, Step 2.6b), a
-    ``MetricsRefused`` carrying gate results, and a ``CannotEvaluate``
+    that hedge them (added at Step 2.6a; ``compute_metrics`` below became its
+    producer at Step 2.6b), a ``MetricsRefused`` carrying gate results, and a
+    ``CannotEvaluate``
     ("PyAEDT could not evaluate this"). None can say "the gates passed and the
     data arrived, but nothing computable was in it". Borrowing ``CannotEvaluate``
     would blame the solver for a wrapper-side or upstream-data problem -- the
@@ -268,6 +317,26 @@ class _Value:
     formula_ref: str
 
 
+@dataclass(frozen=True)
+class _GateRouting:
+    """The three-way decision the supplied gate results force (Step 2.6b).
+
+    Exactly one of three states is live, and they are mutually exclusive by
+    construction rather than by convention:
+
+      * ``refusal`` set          -> at least one gate failed or did not run.
+      * ``refusal`` None, ``qualifying`` non-empty -> the caveated arm.
+      * ``refusal`` None, ``qualifying`` empty     -> the clean arm.
+
+    A TUPLE, NOT A LIST, so the routing cannot be edited after the decision is
+    made -- the frozen dataclass would otherwise hold a mutable payload and only
+    look immutable.
+    """
+
+    refusal: MetricsRefused | None
+    qualifying: tuple[Finding, ...]
+
+
 def compute_metrics(
     gate_findings: Sequence[Finding],
     solved_data: SolvedData,
@@ -295,7 +364,7 @@ def compute_metrics(
     ``CapabilitySpec.tier``, ``ExportRefused.outcome``, and
     ``impedance_at_target``'s Z0: make the dangerous omission un-expressible
     rather than handled. The second layer catches the empty list, which a default
-    could not -- see ``_gate_refusal``.
+    could not -- see ``_route_gates``.
 
     A SHARED ``ProvenanceRecord`` ACROSS ALL SEVEN RECORDS is honest only because
     the approved metric set is S11-only, so one ``expression`` describes every
@@ -303,9 +372,25 @@ def compute_metrics(
     ever added, this shortcut would be the first thing to break, and correctly.
 
     Returns:
-        ``MetricsComputed`` with at least one record when every supplied gate
-        passed; ``MetricsRefused`` with the non-passing gates otherwise. Never
-        ``MetricsComputed`` with an empty list.
+        One of THREE arms, decided by ``_route_gates`` and never by anything
+        computed from the data:
+
+          * ``MetricsComputed`` with at least one record, when every supplied gate
+            returned ``pass``. Never with an empty list.
+          * ``MetricsComputedWithCaveats`` with at least one record AND the
+            non-passing gates that qualify them, when every non-passing gate's
+            outcome is on ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``
+            (``warning`` or ``insufficient_evidence``). This is the ORDINARY arm
+            on a real design, because the freshness gate reports currency
+            undeterminable unconditionally.
+          * ``MetricsRefused`` with every non-passing gate and no numbers of any
+            kind, when at least one gate refuses -- an outcome named by neither
+            list, which today means ``fail`` or ``not_evaluated``, and which a
+            sixth ``FindingOutcome`` would join by default. An EMPTY
+            ``gate_findings`` refuses here too.
+
+        The fourth arm of ``ComputeMetricsResult``, ``CannotEvaluate``, is not
+        produced by this function: nothing here reaches PyAEDT.
 
     Raises:
         MetricsAssemblyError: if the solved data holds no ``S(1,1)`` series, or
@@ -315,9 +400,9 @@ def compute_metrics(
             outside the swept range. These mean the gates were skipped and are
             deliberately NOT converted into omissions.
     """
-    refusal = _gate_refusal(gate_findings, provenance)
-    if refusal is not None:
-        return refusal
+    routing = _route_gates(gate_findings, provenance)
+    if routing.refusal is not None:
+        return routing.refusal
 
     s11 = solved_data.s_parameters.get(S11_KEY)
     if s11 is None:
@@ -338,7 +423,10 @@ def compute_metrics(
         )
 
     values, omissions, band = _computed_values(solved_data, s11, provenance, intent)
-    records, non_finite = _finite_records(values, provenance)
+    # THE STAMP FOLLOWS THE ROUTE. ``all_gates_passed`` on a caveated record would
+    # be a false claim in a typed field; see ``SOME_GATES_HEDGED``.
+    gate_status = SOME_GATES_HEDGED if routing.qualifying else ALL_GATES_PASSED
+    records, non_finite = _finite_records(values, provenance, gate_status)
     omissions = _ordered(omissions + non_finite)
 
     if not records:
@@ -393,54 +481,106 @@ def compute_metrics(
             "success is returned in its place."
         )
 
-    return MetricsComputed(
-        metrics=records,
-        template_text=_template_text(
-            records, omissions, gate_findings, band, s11, provenance, intent
-        ),
+    text = _template_text(
+        records,
+        omissions,
+        gate_findings,
+        routing.qualifying,
+        band,
+        s11,
+        provenance,
+        intent,
     )
+    # THE ARM FOLLOWS THE ROUTE, and the two are not interchangeable:
+    # ``MetricsComputedWithCaveats`` is NOT a subclass of ``MetricsComputed``
+    # (ADR-30 dec. 9), so a consumer wanting clean results only cannot silently
+    # receive caveated ones.
+    if routing.qualifying:
+        return MetricsComputedWithCaveats(
+            metrics=records,
+            qualifying_gates=list(routing.qualifying),
+            template_text=text,
+        )
+    return MetricsComputed(metrics=records, template_text=text)
 
 
-def _gate_refusal(
+def _route_gates(
     gate_findings: Sequence[Finding], provenance: ProvenanceRecord
-) -> MetricsRefused | None:
-    """The refusal arm when the gates do not permit computation, else None.
+) -> _GateRouting:
+    """Partition the supplied gate results into refuse / qualify / permit.
 
-    THE SECOND FAIL-CLOSED LAYER, covering what a required parameter cannot: an
-    EMPTY list is perfectly expressible, and it means nothing was verified, so it
-    must refuse. Computing on it would make "forgot to run the gates" produce
-    numbers indistinguishable from verified ones -- the core failure mode the
-    whole product exists to avoid.
+    WAS ``_gate_refusal`` AND RETURNED ``MetricsRefused | None``. The rename comes
+    with the semantics: a function named for one of three outcomes cannot report
+    the other two, and a ``None`` that used to mean "compute cleanly" now has to
+    distinguish "compute cleanly" from "compute under a caveat".
 
-    THE OUTCOME LABEL ON THE EMPTY CASE IS A KNOWING, DOCUMENTED MISLABEL.
-    ``MetricsRefused.outcome`` is fixed at ``"gates_failed"``, and when the list
-    is empty no gate failed because no gate ran. It is used anyway, because every
-    alternative is worse: ``CannotEvaluate`` asserts "PyAEDT could not evaluate
-    this" and nothing here reached PyAEDT (ADR-16 decision 5), ``MetricsComputed``
-    would return numbers, and the union has no fourth arm. This follows the
-    precedent ``broker.classify_outcome`` records for ``refused_by_gate`` (ADR-18
-    decision 6): a knowing, documented mislabelling is recoverable in-band, while
-    ambiguity is not. The ``template_text`` states plainly that no gate ran, so
-    the imprecision lives in one enum value and nowhere else.
+    THE SECOND FAIL-CLOSED LAYER IS UNCHANGED, covering what a required parameter
+    cannot: an EMPTY list is perfectly expressible, and it means nothing was
+    verified, so it must refuse. Computing on it would make "forgot to run the
+    gates" produce numbers indistinguishable from verified ones -- the core
+    failure mode the whole product exists to avoid.
+
+    THE OUTCOME LABEL ON THE EMPTY CASE IS A KNOWING, DOCUMENTED MISLABEL, and
+    Step 2.6b does not disturb it. ``MetricsRefused.outcome`` is fixed at
+    ``"gates_failed"``, and when the list is empty no gate failed because no gate
+    ran. It is used anyway, because every alternative is worse: ``CannotEvaluate``
+    asserts "PyAEDT could not evaluate this" and nothing here reached PyAEDT
+    (ADR-16 decision 5), and the two computed arms would both return numbers. The
+    fourth arm added at 2.6a does NOT help here -- it requires at least one
+    qualifying gate, and an empty list has none -- so the union still offers no
+    honest home. This follows ``broker.classify_outcome``'s precedent for
+    ``refused_by_gate`` (ADR-18 decision 6): a knowing, documented mislabelling is
+    recoverable in-band, while ambiguity is not.
+
+    REFUSAL WINS OVER QUALIFICATION when both are present, and
+    ``failing_gates`` then echoes EVERY non-passing gate rather than only the
+    refusing ones. That is the pre-2.6b behaviour, kept deliberately: dropping the
+    hedgers would lose information a reader needs -- seeing the ``fail`` without
+    seeing that convergence also stopped short tells them less than the current
+    output does -- and ``MetricsRefused.failing_gates``' docstring already records
+    that its name is a mild misnomer for a warning, with each Finding's own
+    five-state ``outcome`` carrying the exact truth.
     """
     if not gate_findings:
-        return MetricsRefused(
-            failing_gates=[],
-            template_text=_refusal_text(provenance, [], supplied=0),
+        return _GateRouting(
+            refusal=MetricsRefused(
+                failing_gates=[],
+                template_text=_refusal_text(provenance, [], supplied=0),
+            ),
+            qualifying=(),
         )
+
     not_passing = [
         finding
         for finding in gate_findings
         if finding.outcome != GATE_OUTCOME_THAT_PERMITS_COMPUTATION
     ]
-    if not_passing:
-        return MetricsRefused(
-            failing_gates=not_passing,
-            template_text=_refusal_text(
-                provenance, not_passing, supplied=len(gate_findings)
+    # THE ALLOW-LIST IS THE IMPORTED ONE, so this routing and the
+    # ``MetricsComputedWithCaveats`` validator consult the same object. A gate
+    # whose outcome is on neither list refuses, which is how a sixth
+    # ``FindingOutcome`` fails closed.
+    refusing = [
+        finding
+        for finding in not_passing
+        if finding.outcome not in GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION
+    ]
+    if refusing:
+        return _GateRouting(
+            refusal=MetricsRefused(
+                failing_gates=not_passing,
+                template_text=_refusal_text(
+                    provenance, not_passing, supplied=len(gate_findings)
+                ),
             ),
+            qualifying=(),
         )
-    return None
+
+    # ONLY THE HEDGERS TRAVEL, never the passes. ADR-30 dec. 10 excludes ``pass``
+    # from the allow-list precisely so this arm cannot be filled entirely with
+    # passing gates -- "a result announcing a caveat in its own ``outcome`` and
+    # naming none". ``not_passing`` IS the hedger list here, because every refusing
+    # outcome was just ruled out.
+    return _GateRouting(refusal=None, qualifying=tuple(not_passing))
 
 
 def _computed_values(
@@ -572,7 +712,7 @@ def _computed_values(
 
 
 def _finite_records(
-    values: Sequence[_Value], provenance: ProvenanceRecord
+    values: Sequence[_Value], provenance: ProvenanceRecord, gate_status: str
 ) -> tuple[list[MetricRecord], list[_Omission]]:
     """Build a record per value, omitting any value strict JSON cannot carry.
 
@@ -627,18 +767,21 @@ def _finite_records(
                 units=value.units,
                 formula_ref=value.formula_ref,
                 # ASSERTS MORE THAN W-7 CAN VERIFY, AND A READER SHOULD KNOW IT.
-                # This says the gates passed; W-7 checked that every Finding it
-                # was HANDED says "pass". It cannot confirm the list is the
-                # COMPLETE set of four, because that needs the four rule ids,
-                # which live in ``gating`` (which metrics may not import) or in a
-                # new contract constant (a semver event). Gate-set completeness
-                # is therefore the CALLER'S responsibility, and from Step 3.4
-                # there is exactly one caller constructing this list from
-                # ``evaluate_gates`` -- one auditable call site. The count and
-                # the rule ids of what was actually supplied are rendered in
-                # template_text, which is the honest place for a claim this
-                # string is too coarse to make.
-                gate_status_at_computation=ALL_GATES_PASSED,
+                # This says what the gates DID; W-7 checked only the Findings it
+                # was HANDED. It cannot confirm the list is the COMPLETE set of
+                # four, because that needs the four rule ids, which live in
+                # ``gating`` (which metrics may not import) or in a new contract
+                # constant (a semver event). Gate-set completeness is therefore
+                # the CALLER'S responsibility, and from Step 3.4 there is exactly
+                # one caller constructing this list from ``evaluate_gates`` -- one
+                # auditable call site. The count and the rule ids of what was
+                # actually supplied are rendered in template_text, which is the
+                # honest place for a claim this string is too coarse to make.
+                #
+                # PASSED IN RATHER THAN CONSTANT since Step 2.6b: the caller chose
+                # the route, and a record must not stamp ``all_gates_passed`` when
+                # its own result arm says otherwise.
+                gate_status_at_computation=gate_status,
                 provenance=provenance,
             )
         )
@@ -682,6 +825,7 @@ def _template_text(
     records: Sequence[MetricRecord],
     omissions: Sequence[_Omission],
     gate_findings: Sequence[Finding],
+    qualifying: Sequence[Finding],
     band: Minus10dBBand | NoMinus10dBBand,
     s11: Sequence[ComplexSample],
     provenance: ProvenanceRecord,
@@ -717,16 +861,25 @@ def _template_text(
     at the adapter, ADR-9) and are rendered inside quotes as data, never in an
     instruction position (§6.6).
     """
-    parts = [
+    parts: list[str] = []
+    # THE CAVEAT GOES FIRST. Neda's ruling (ADR-30 dec. 7) chose "Show the
+    # numbers, with a clear notice ON TOP", and the position was part of what she
+    # chose -- a notice below the numbers is read after the reader has already
+    # taken them in. See this function's docstring for what moved.
+    if qualifying:
+        parts.append(_CAVEAT_HEADING)
+        parts += [
+            f"  [{finding.rule_id}] {finding.outcome}: {finding.reason_flagged}"
+            for finding in qualifying
+        ]
+
+    parts.append(
         f'Metrics for project "{provenance.project}", design '
         f'"{provenance.design}", variation '
         f"{provenance.variation.variation_hash}: {len(records)} of "
         f"{len(METRIC_ORDER)} approved metric record(s) computed, "
-        f"{len(omissions)} omitted. All {len(gate_findings)} gate result(s) "
-        f"supplied passed ({_rule_ids(gate_findings)}); the wrapper verified the "
-        "outcomes it was handed and does not itself confirm that this is the "
-        "complete set of four gates."
-    ]
+        f"{len(omissions)} omitted. {_gate_sentence(gate_findings, qualifying)}"
+    )
     if intent is not None:
         parts.append(
             "Target frequency: "
@@ -753,6 +906,34 @@ def _template_text(
         ]
     parts.append(_NO_INTERPRETATION_NOTICE)
     return "\n".join(parts)
+
+
+def _gate_sentence(
+    gate_findings: Sequence[Finding], qualifying: Sequence[Finding]
+) -> str:
+    """What the supplied gates did, stated without overclaiming either way.
+
+    TWO SENTENCES, NOT ONE WITH A CONDITIONAL CLAUSE. "All N gate result(s)
+    supplied passed" is simply FALSE on the caveated arm, and it is the kind of
+    false that a reader trusts because it is stated in the same breath as a true
+    count. The completeness disclaimer is common to both, because W-7's inability
+    to confirm the set of four does not depend on how the gates came out.
+    """
+    disclaimer = (
+        "the wrapper verified the outcomes it was handed and does not itself "
+        "confirm that this is the complete set of four gates."
+    )
+    if not qualifying:
+        return (
+            f"All {len(gate_findings)} gate result(s) supplied passed "
+            f"({_rule_ids(gate_findings)}); {disclaimer}"
+        )
+    return (
+        f"{len(qualifying)} of {len(gate_findings)} gate result(s) supplied did "
+        f"NOT pass and qualify the values above ({_rule_ids(qualifying)}); the "
+        f"rest passed. No gate failed -- numbers are never reported when one "
+        f"does. Of the gates supplied ({_rule_ids(gate_findings)}), {disclaimer}"
+    )
 
 
 def _refusal_text(
@@ -792,7 +973,7 @@ def _refusal_text(
             f"  [{finding.rule_id}] {finding.outcome}: {finding.reason_flagged}"
             for finding in not_passing
         ]
-    parts.append(_ONLY_PASS_PERMITS_NOTICE)
+    parts.append(_REFUSAL_POLICY_NOTICE)
     return "\n".join(parts)
 
 

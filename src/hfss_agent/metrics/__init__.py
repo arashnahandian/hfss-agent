@@ -40,6 +40,7 @@ from hfss_agent.metrics.assembler import (
     S11_AT_TARGET,
     S11_KEY,
     S11_MIN,
+    SOME_GATES_HEDGED,
     VSWR_AT_TARGET,
     MetricsAssemblyError,
     compute_metrics,
@@ -116,9 +117,14 @@ __all__ = [
     "HZ",
     "RATIO",
     "OHM",
-    # The gate contract: the one permitting outcome, and the recorded status
+    # The gate contract: the one outcome permitting the CLEAN arm, and the two
+    # recorded statuses. The QUALIFYING outcomes are deliberately not re-exported
+    # here -- ``contract.tool_io`` owns that frozenset and W-7 imports it rather
+    # than copying it, so re-exporting would create the second spelling ADR-30's
+    # fourth gap was about.
     "GATE_OUTCOME_THAT_PERMITS_COMPUTATION",
     "ALL_GATES_PASSED",
+    "SOME_GATES_HEDGED",
     "NO_INTENT_REASON",
     "S11_KEY",
 ]

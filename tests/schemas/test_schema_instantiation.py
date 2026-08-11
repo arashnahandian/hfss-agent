@@ -7,6 +7,7 @@ S (as real/imag) survive the trip.
 
 import importlib
 import inspect
+import json
 import pkgutil
 import typing
 from datetime import datetime, timezone
@@ -220,6 +221,102 @@ def test_provenance_record_instantiates(provenance: ProvenanceRecord) -> None:
         "contract_version",
         "wrapper_version",
     }
+
+
+# A ``snapshot-3.0.0`` ``ProvenanceRecord`` payload -- the shape an external
+# consumer replaying an old record would present. Written as a plain dict rather
+# than built from the fixture, because the whole point is that it is NOT a record
+# this package can construct: the two keys were removed at Step 2.6a.
+_STALE_3_0_0_PAYLOAD = {
+    "project": "patch_antenna",
+    "design": "HFSSDesign1",
+    "solution_type": "DrivenModal",
+    "setup": "Setup1",
+    "sweep": "Sweep1",
+    "variation": {"values": {"w": "2mm"}, "variation_hash": "sha256:abc"},
+    "expression": "dB(S(1,1))",
+    "reference_impedance": 50.0,
+    "solve_timestamp": "2026-07-17T09:30:00Z",
+    "freshness_status": "fresh",
+    "snapshot_id": "snap-001",
+    "contract_version": "snapshot-3.0.0",
+    "wrapper_version": "0.4.0",
+    # The two fields ADR-30 dec. 4 removed, and the only difference between this
+    # payload and the one in the control below.
+    "engine_version": "engine-1.0.0",
+    "rule_version": "rule-2.0.0",
+}
+
+
+@pytest.mark.parametrize("how", ["model_validate", "model_validate_json"])
+def test_a_stale_provenance_record_is_refused_by_extra_forbid(how: str) -> None:
+    """ADR-30 dec. 14, pinned: ``extra="forbid"`` refuses a ``snapshot-3.0.0`` record.
+
+    THE REFUSAL IS INTENDED, and it is what makes the version rule enforceable at
+    all. ``ProvenanceRecord``'s tombstone says so in as many words: a record
+    stamped with an older schema version carries two keys this shape no longer
+    has, and it is REFUSED rather than silently stripped.
+
+    BOTH VALIDATION PATHS, because a wire payload is the case that matters. The
+    refusal has no inbound path inside this package -- nothing here deserializes a
+    ``ProvenanceRecord`` -- so it bites an external consumer replaying an old
+    record, and that consumer arrives as JSON. Verified rather than taken from the
+    ADR: both paths refuse identically, with two ``extra_forbidden`` errors naming
+    exactly the two removed keys.
+    """
+    payload = (
+        _STALE_3_0_0_PAYLOAD
+        if how == "model_validate"
+        else json.dumps(_STALE_3_0_0_PAYLOAD)
+    )
+    with pytest.raises(ValidationError) as caught:
+        getattr(ProvenanceRecord, how)(payload)
+    errors = caught.value.errors()
+    assert {error["type"] for error in errors} == {"extra_forbidden"}
+    assert {error["loc"][0] for error in errors} == {
+        "engine_version",
+        "rule_version",
+    }
+
+
+@pytest.mark.parametrize("how", ["model_validate", "model_validate_json"])
+def test_the_stale_version_stamp_enforces_nothing_on_its_own(how: str) -> None:
+    """THE CONTROL, and it is what makes the test above load-bearing.
+
+    ADR-30 dec. 14 records that the reviewing chat had this backwards -- it
+    assumed the refusal was a harmless side effect made safe by version pinning.
+    Inverting it shows the opposite: "dropping only the two removed keys from the
+    same payload, it validates CLEAN while still carrying ``contract_version:
+    'snapshot-3.0.0'`` -- and nothing in this package compares that string
+    anywhere. So the stale version stamp enforces nothing on its own."
+
+    WITHOUT THIS TEST THE REFUSAL PINS A FACT WHOSE SIGNIFICANCE IS INVISIBLE. A
+    reader meeting only the refusal would reasonably assume the version string is
+    doing the work; this shows ``extra="forbid"`` is doing all of it, and that a
+    record claiming a schema version whose shape it no longer has would otherwise
+    pass unnoticed -- exactly what clause 2 of ``common.py``'s version arithmetic
+    exists to prevent.
+
+    THE ONLY DIFFERENCE FROM THE REFUSED PAYLOAD IS THE TWO KEYS, asserted below
+    rather than left to a reader comparing two literals.
+    """
+    current = {
+        key: value
+        for key, value in _STALE_3_0_0_PAYLOAD.items()
+        if key not in {"engine_version", "rule_version"}
+    }
+    assert set(_STALE_3_0_0_PAYLOAD) - set(current) == {
+        "engine_version",
+        "rule_version",
+    }
+
+    payload = current if how == "model_validate" else json.dumps(current)
+    record = getattr(ProvenanceRecord, how)(payload)
+
+    # It validates, and it still CLAIMS a schema version whose shape it no longer
+    # has. Both halves matter: the first is the surprise, the second is the hazard.
+    assert record.contract_version == "snapshot-3.0.0"
+    assert record.contract_version != CONTRACT_VERSION
 
 
 def test_inspection_provenance_instantiates(
