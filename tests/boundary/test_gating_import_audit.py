@@ -142,11 +142,28 @@ _AGGREGATOR = "gates.py"
 _NON_GATE_FILES = frozenset({_PACKAGE_INIT, _SHARED, _AGGREGATOR})
 
 # The attribute whose keys must never be read, and the operations that read one.
-# ``dict(...)`` and ``len(...)`` are deliberately absent: copying the mapping
-# wholesale or reporting its size reads no key and is how a gate carries it as
-# evidence.
 _SIGNALS_ATTR = "available_signals"
 _KEY_READING_METHODS = ("get", "keys", "values", "items", "setdefault", "pop")
+
+# THE CALLS THAT MAY RECEIVE THE MAPPING AS AN ARGUMENT -- AN ALLOW-LIST, FOR THE
+# REASON THIS WHOLE FILE IS ONE. It began as a six-method denylist plus the note
+# that "``dict(...)`` and ``len(...)`` are deliberately absent", which is the same
+# note inverted -- and it was measurably wrong the way a denylist is always
+# measurably wrong: ``sorted(signals)``, ``list(signals)``, ``next(iter(signals))``
+# and every comprehension enumerate the key space and none of them was a method
+# call, so none was named and none was caught.
+#
+# WHAT SEPARATES THE TWO PERMITTED CALLS FROM EVERY OTHER ONE. ``dict(m)`` copies
+# the mapping WHOLESALE -- no key is singled out, nothing about its structure
+# changes, and the result is the same evidence in a new object. ``len(m)`` reports
+# a size. NEITHER SURFACES A KEY NAME INTO THE PROGRAM. ``list(m)``, ``sorted(m)``,
+# ``iter(m)`` and a comprehension all do exactly that: they project the key space
+# into a sequence the code can then read, which is the thing the contract forbids.
+#
+# A CALL ON ANYTHING BUT A BARE NAME IS REFUSED OUTRIGHT (``json.dumps(m)``,
+# ``self.read(m)``), because the callee is then not something this scan can judge
+# and the failure mode of guessing is silence.
+_KEY_BLIND_CALLS = ("dict", "len")
 
 
 def _under(module: str, root: str) -> bool:
@@ -154,12 +171,48 @@ def _under(module: str, root: str) -> bool:
 
 
 def _imported_modules(source: str) -> list[str]:
+    """Every module named by an import in ``source``, in its own spelling.
+
+    A RELATIVE IMPORT IS REPORTED IN ITS SOURCE SPELLING AND IS THEREBY REFUSED --
+    ``from ..broker import Broker`` comes back as ``"..broker"``, which matches no
+    allow-list root, and ``from . import x`` comes back as ``"."``. THIS REPLACES A
+    FILTER ON ``node.level == 0`` THAT DROPPED EVERY RELATIVE IMPORT BEFORE THE
+    ALLOW-LIST WAS CONSULTED: a planted ``from ..broker import Broker`` in a gate
+    left this entire file green, which is the exact failure an allow-list exists to
+    make impossible.
+
+    BLANKET REJECTION RATHER THAN RESOLUTION, and the choice is not merely the
+    simpler one. Resolving ``..broker`` to ``hfss_agent.broker`` needs the
+    IMPORTING FILE'S PACKAGE POSITION, which this function does not have and must
+    not need: it takes source TEXT, and half its callers -- every planted string in
+    the meta-test below -- have no file position at all. Threading one through would
+    make the audit's positive limb test a different code path from the audit itself,
+    which is the shape that lets a detector rot. Rejection needs no position and
+    treats planted and real sources identically.
+
+    IT IS ENFORCEABLE BECAUSE IT IS ALREADY TRUE. Measured across ``src/hfss_agent``
+    rather than assumed: there is not one relative import anywhere in the package,
+    in gating or outside it. So this costs nothing today, and the day someone wants
+    one it is a refusal in a diff someone reads -- the same discipline the root
+    allow-list applies to ``math``.
+
+    THE CONSEQUENCE FOR THE PER-FILE RULES, stated rather than left to be found:
+    ``_intra_package_imports`` still cannot see ``from .solution_exists import
+    evaluate`` as an intra-package import, because ``".solution_exists"`` is not
+    under ``hfss_agent.gating``. That blindness is now UNREACHABLE rather than
+    merely unlikely -- the allow-list refuses the import outright, so no relative
+    spelling can reach a state where gate-independence would have to interpret it.
+    A relative gate-to-gate import fails at
+    ``test_gating_imports_only_the_allowed_roots``, not at
+    ``test_no_gate_module_imports_another_gate_module``, and both planted spellings
+    in the meta-test below pin exactly that.
+    """
     modules: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             modules += [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            modules.append("." * node.level + (node.module or ""))
     return modules
 
 
@@ -422,6 +475,20 @@ def _key_reads(source: str) -> list[str]:
     first. Deeper indirection is not tracked, and saying so is more useful than
     implying a completeness this cannot have: an AST audit sees syntax, not
     dataflow.
+
+    ITERATION IS THE FORM THAT WAS MISSING, and it is the most natural spelling
+    there is: ``for key in signals:`` enumerates a mapping without calling any of
+    the six methods above, so a detector built from methods alone never saw it. A
+    for-loop branching on an invented key was planted and left the entire suite
+    green. Four node shapes carry the same read and all four are handled here —
+    the ``for`` statement, a comprehension's ``for`` clause (list, set, dict and
+    generator all reduce to ``ast.comprehension``), a call that projects the keys
+    into a sequence, and the subscript/method/membership forms that were already
+    covered.
+
+    ``ast.AsyncFor`` is included beside ``ast.For``. This package contains no async
+    code, so that half is symmetry rather than a live hazard — the same symmetry
+    ``_cross_call_state`` already keeps by walking ``ast.AsyncFunctionDef``.
     """
     tree = ast.parse(source)
     aliases = _signals_aliases(tree)
@@ -429,6 +496,21 @@ def _key_reads(source: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and _is_signals(node.value, aliases):
             found.append(f"line {node.lineno}: subscript")
+        elif isinstance(node, ast.For | ast.AsyncFor) and _is_signals(
+            node.iter, aliases
+        ):
+            found.append(f"line {node.lineno}: iteration")
+        elif isinstance(node, ast.comprehension) and _is_signals(
+            node.iter, aliases
+        ):
+            # ``ast.comprehension`` has no ``lineno``; report its iterable's.
+            found.append(f"line {node.iter.lineno}: comprehension")
+        elif isinstance(node, ast.Call) and any(
+            _is_signals(argument, aliases) for argument in node.args
+        ):
+            callee = node.func.id if isinstance(node.func, ast.Name) else None
+            if callee not in _KEY_BLIND_CALLS:
+                found.append(f"line {node.lineno}: {callee or 'call'}(...)")
         elif (
             isinstance(node, ast.Attribute)
             and node.attr in _KEY_READING_METHODS
@@ -477,10 +559,17 @@ def test_the_key_read_detector_finds_every_shape_it_claims_to() -> None:
     An assertion that a pattern appears NOWHERE needs a companion showing the same
     code FINDING it somewhere, or the detector can silently stop looking — a
     typo'd attribute name, a walk that no longer visits, a node type that changed
-    shape — and stay green forever. This build has shipped three vacuous tests and
-    that is one of the shapes.
+    shape — and stay green forever. A test that can only pass is one of the
+    recurring shapes a vacuous test takes, and it is the one an "appears nowhere"
+    assertion falls into by default.
 
     Each planted source below is a real spelling someone would write.
+
+    THE ITERATION BLOCK IS WHY THIS LIMB IS LONGER THAN IT WAS. Every spelling in
+    it was MISSED by the method-based detector this replaced, and the plainest of
+    them -- ``for key in signals:`` -- is the first thing anyone writes to walk a
+    mapping. A positive limb that probes only the shapes the detector was built
+    around measures the author's imagination rather than the detector.
     """
     planted = {
         "subscript": "x = evidence.available_signals['design_modified']",
@@ -496,18 +585,51 @@ def test_the_key_read_detector_finds_every_shape_it_claims_to() -> None:
         "alias + get": (
             "sigs = evidence.available_signals\nx = sigs.get('design_modified')"
         ),
+        # --- the enumeration forms, none of which is a method call -------------
+        "bare for-loop": "for key in evidence.available_signals: pass",
+        "for-loop with a branch": (
+            "for key in evidence.available_signals:\n"
+            "    if key == 'design_modified': pass\n"
+        ),
+        "alias + for-loop": (
+            "sigs = evidence.available_signals\nfor key in sigs: pass"
+        ),
+        "sorted": "for key in sorted(evidence.available_signals): pass",
+        "list": "x = list(evidence.available_signals)",
+        "tuple": "x = tuple(evidence.available_signals)",
+        "set": "x = set(evidence.available_signals)",
+        "iter": "x = iter(evidence.available_signals)",
+        "next(iter(...))": "x = next(iter(evidence.available_signals))",
+        "min": "x = min(evidence.available_signals)",
+        "list comprehension": "x = [k for k in evidence.available_signals]",
+        "set comprehension": "x = {k for k in evidence.available_signals}",
+        "dict comprehension": "x = {k: 1 for k in evidence.available_signals}",
+        "generator expression": (
+            "x = any(k == 'design_modified' for k in evidence.available_signals)"
+        ),
+        "alias + comprehension": (
+            "sigs = evidence.available_signals\nx = [k for k in sigs]"
+        ),
+        # A call this scan cannot judge the callee of. Refused rather than guessed.
+        "call on a non-name callee": "x = json.dumps(evidence.available_signals)",
     }
     for label, source in planted.items():
         assert _key_reads(source), f"the detector missed a {label} key read"
 
     # AND THE LEGITIMATE SPELLINGS ARE NOT FLAGGED, so the check is discriminating
     # rather than merely alarmed. These are how a gate carries the mapping as
-    # evidence without reading it: copy it wholesale, or report its size.
+    # evidence without reading it: copy it wholesale, or report its size. The first
+    # is the shape ``freshness._from_solve_state`` actually contains, so a rule
+    # flagging it would fail the package on the day it shipped.
     for label, source in {
         "wholesale copy": "x = dict(evidence.available_signals)",
         "size only": "x = len(evidence.available_signals)",
+        # Wholesale copy by unpacking. Structurally the same as ``dict(...)``: it
+        # surfaces no key name into the program, it just rebuilds the mapping.
+        "wholesale copy by unpacking": "x = {**evidence.available_signals}",
         "the flag beside it": "if evidence.determinable: pass",
         "an unrelated dict": "x = other_mapping['k']",
+        "iterating something else": "for k in other_mapping: pass",
     }.items():
         assert not _key_reads(source), f"the detector wrongly flagged {label}"
 
@@ -522,6 +644,13 @@ def test_audit_would_catch_a_forbidden_import() -> None:
     through — the reason this file's polarity differs from its five siblings. Each
     must be refused by the allow-list, and ``hfss_agent.contract`` must still be
     admitted so this is not passing by rejecting everything.
+
+    THE RELATIVE SPELLINGS AT THE END ARE WHY THIS LIMB WAS INCOMPLETE, and their
+    absence is what let the ``node.level == 0`` filter survive. Every source here
+    was an ABSOLUTE import, so a scanner that silently dropped relative ones passed
+    this test and every other in the file while a planted ``from ..broker import
+    Broker`` sat in a gate. A positive limb that probes only the spellings the
+    scanner already handles proves nothing about the ones it does not.
     """
     for source in (
         "import random",
@@ -538,6 +667,15 @@ def test_audit_would_catch_a_forbidden_import() -> None:
         "from hfss_agent.adapter import base",
         "import pyaedt",
         "from ansys.aedt.core import Hfss",
+        # RELATIVE SPELLINGS OF THE SAME VIOLATIONS. ``from ..broker import
+        # Broker`` is the escape the level filter opened; the two gate-to-gate
+        # forms are the ones the per-file rules would otherwise have to interpret,
+        # and are refused here instead so those rules never see one.
+        "from ..broker import Broker",
+        "from ...hfss_agent.adapter import base",
+        "from .solution_exists import evaluate",
+        "from . import solution_exists",
+        "from .common import applicability",
     ):
         modules = _imported_modules(source)
         assert modules, f"{source!r} parsed to no module at all"
@@ -611,19 +749,55 @@ def test_audit_would_catch_a_forbidden_import() -> None:
 #
 # IT EARNS ITS PLACE BECAUSE THE CONSTRUCT ALREADY EXISTS HERE.
 # ``target_coverage.evaluate(snapshot, target_frequency_hz=None)`` has a default
-# argument today, so this hazard is one keystroke from shipped code -- unlike a
-# mutated CLASS attribute, which also escapes the scan but needs a class to exist
-# first, and this package has none. That one is flagged rather than guarded, on
-# ADR-28 dec. 4's rule: a check for a construct with no producer is a check
-# derived from imagination.
-_MUTABLE_DEFAULT_NODES = (
-    ast.Dict,
-    ast.List,
-    ast.Set,
-    ast.DictComp,
-    ast.ListComp,
-    ast.SetComp,
-)
+# argument today, so this hazard is one keystroke from shipped code.
+#
+# AND A FIFTH FORM, WHICH IS THE FOURTH'S SIBLING AND WAS MISSED FOR THE SAME
+# REASON THE KEY-BRANCH DETECTOR MISSED ITERATION -- the check enumerated SHAPES
+# instead of stating a property:
+#
+#     def evaluate(snapshot, _memo=dict()):
+#
+# ``dict()`` and ``list()`` are ``ast.Call``, not ``ast.Dict`` and ``ast.List``, so
+# a six-entry list of literal node types never saw them while doing exactly what
+# the literal spellings do. THAT IS NOW AN ALLOW-LIST OVER DEFAULT SHAPES rather
+# than a denylist over mutable ones: a default may be a constant, a tuple of
+# constants, or a signed numeric constant, and ANYTHING ELSE IS REPORTED. The next
+# factory nobody named -- ``bytearray()``, ``defaultdict(list)``, ``[]``, a
+# comprehension -- lands in the reported set by default instead of by anticipation.
+# Both defaults in this package are ``None``, so the allow-list costs nothing today.
+#
+# A ``Name`` DEFAULT IS DELIBERATELY NOT ADMITTED, and refusing it closes a hole
+# rather than inventing a rule. ``def evaluate(s, memo=_MEMO)`` binds a
+# module-level mutable to a PARAMETER, and the mutation check above then cannot see
+# writes through it: ``memo`` is a parameter, so it lands in ``_local_bindings`` and
+# is subtracted as a shadow. Permitting the shape would leave the fourth form
+# reachable by one more step of indirection.
+#
+# A MUTATED CLASS ATTRIBUTE ALSO ESCAPES THE SCAN AND IS STILL FLAGGED RATHER THAN
+# GUARDED, on ADR-28 dec. 4's rule -- it needs a class to exist first and this
+# package has none. THE FUNCTION-ATTRIBUTE SIBLING IS THE OPPOSITE CASE AND IS NOW
+# GUARDED: ``evaluate.calls = 0`` needs only a ``def``, and this package is nothing
+# but ``def``s. It was invisible until now for a mechanical reason --
+# ``_module_level_names`` collected ``Assign`` and ``AnnAssign`` only, so a function
+# name never entered ``watched`` and a write to an attribute of one had nothing to
+# match against.
+
+
+def _is_constant_default(node: ast.expr) -> bool:
+    """Whether a default argument is a value that cannot carry state between calls.
+
+    Three admitted shapes, and each is admitted because it is IMMUTABLE rather than
+    because it is common: a constant (``None``, a number, a string, a bool), a
+    tuple whose every element is one, and a signed numeric constant -- ``-1.0``
+    parses as ``UnaryOp(USub, Constant)`` and is not an ``ast.Constant`` itself.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.Tuple):
+        return all(_is_constant_default(element) for element in node.elts)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
+        return _is_constant_default(node.operand)
+    return False
 
 _MUTATING_METHODS = frozenset(
     {
@@ -645,7 +819,20 @@ def _bound_names(target: ast.AST) -> set[str]:
 
 
 def _module_level_names(tree: ast.Module) -> set[str]:
-    """Names assigned in the module body -- the candidates for shared state."""
+    """Names bound in the module body -- the candidates for shared state.
+
+    A ``def`` BINDS A MODULE-LEVEL NAME TOO, and omitting it was the mechanical
+    reason ``evaluate.calls = 0`` was invisible: a function object carries
+    attributes exactly as any other object does, they survive between calls exactly
+    as a module-level dict would, and until a function's name entered ``watched``
+    there was nothing for ``_writes_into`` to match a write against.
+
+    THE INVERSION WORTH NAMING, because the file's own prose sets up its opposite.
+    A mutated CLASS attribute is flagged-not-guarded on the grounds that this
+    package contains no classes. The function-attribute form is that hazard's
+    sibling and the grounds run the other way: this package contains nothing BUT
+    functions, so the construct it needs is on every one of these seven files.
+    """
     names: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -653,6 +840,8 @@ def _module_level_names(tree: ast.Module) -> set[str]:
                 names |= _bound_names(target)
         elif isinstance(node, ast.AnnAssign):
             names |= _bound_names(node.target)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            names.add(node.name)
     return names
 
 
@@ -692,8 +881,9 @@ def _cross_call_state(source: str) -> list[str]:
     """Every construct that lets a value survive between two calls, with its line.
 
     Two forms, both of which make ``evaluate`` return different findings for the
-    same snapshot: a write to module-level state from inside a function, and a
-    mutable default argument (evaluated once, at definition).
+    same snapshot: a write to module-level state from inside a function -- INCLUDING
+    an attribute of a module-level function, which a ``def`` binds a name for -- and
+    a default argument that is not a constant (evaluated once, at definition).
     """
     tree = ast.parse(source)
     module_names = _module_level_names(tree)
@@ -706,9 +896,15 @@ def _cross_call_state(source: str) -> list[str]:
     for function in functions:
         arguments = function.args
         for default in (*arguments.defaults, *arguments.kw_defaults):
-            if isinstance(default, _MUTABLE_DEFAULT_NODES):
+            # ``kw_defaults`` carries a real Python ``None`` -- not an
+            # ``ast.Constant`` -- for every keyword-only argument that has NO
+            # default. Skipping those is what keeps the allow-list from reporting
+            # the absence of a default as a non-constant one.
+            if default is None:
+                continue
+            if not _is_constant_default(default):
                 found.append(
-                    f"line {default.lineno}: mutable default argument in "
+                    f"line {default.lineno}: non-constant default argument in "
                     f"{function.name}()"
                 )
         watched = module_names - _local_bindings(function)
@@ -818,6 +1014,61 @@ def test_the_cross_call_state_detector_finds_every_shape_it_claims_to() -> None:
             "        count += 1\n"
             "    return inner\n"
         ),
+        # --- attributes hung on a function, which a ``def`` makes reachable -----
+        "function attribute write": (
+            "def evaluate(s):\n"
+            "    evaluate.calls = 1\n"
+        ),
+        "function attribute increment": (
+            "def evaluate(s):\n"
+            "    evaluate.calls += 1\n"
+        ),
+        "attribute on a sibling function": (
+            "def _helper():\n"
+            "    return 1\n"
+            "def evaluate(s):\n"
+            "    _helper.seen = s\n"
+        ),
+        "del of a function attribute": (
+            "def evaluate(s):\n"
+            "    del evaluate.calls\n"
+        ),
+        # --- defaults that are not constants ------------------------------------
+        # The first two are the ``ast.Call`` spellings a node-type denylist could
+        # not see; the rest are what an allow-list gets for free.
+        "dict() default": (
+            "def evaluate(s, _memo=dict()):\n"
+            "    return _memo\n"
+        ),
+        "list() default": (
+            "def evaluate(s, _seen=list()):\n"
+            "    return _seen\n"
+        ),
+        "set() default": (
+            "def evaluate(s, _seen=set()):\n"
+            "    return _seen\n"
+        ),
+        "dict literal default": (
+            "def evaluate(s, _memo={}):\n"
+            "    return _memo\n"
+        ),
+        "list literal default": (
+            "def evaluate(s, _seen=[]):\n"
+            "    return _seen\n"
+        ),
+        "comprehension default": (
+            "def evaluate(s, _seen=[x for x in ()]):\n"
+            "    return _seen\n"
+        ),
+        "keyword-only mutable default": (
+            "def evaluate(s, *, _memo={}):\n"
+            "    return _memo\n"
+        ),
+        "module-level mutable bound through a default": (
+            "_MEMO = {}\n"
+            "def evaluate(s, memo=_MEMO):\n"
+            "    memo[s] = 1\n"
+        ),
     }
     for label, source in caught.items():
         assert _cross_call_state(source), f"the detector missed a {label}"
@@ -863,6 +1114,49 @@ def test_the_cross_call_state_detector_finds_every_shape_it_claims_to() -> None:
             "_STATUS = {'a': 1}\n"
             "def evaluate(s):\n"
             "    return _STATUS.get('a')\n"
+        ),
+        # --- the shapes the two widenings above must NOT have swept up ----------
+        # A ``def`` now binds a watched name, so these three pin that naming a
+        # function, calling one, and returning one are all still legal. The second
+        # is ``gates.evaluate_gates``' entire body.
+        "reading a function's own name": (
+            "def evaluate(s):\n"
+            "    return evaluate\n"
+        ),
+        "calling a sibling function": (
+            "def _helper(x):\n"
+            "    return x\n"
+            "def evaluate(s):\n"
+            "    return _helper(s)\n"
+        ),
+        "a local attribute write": (
+            "def evaluate(s):\n"
+            "    holder = s\n"
+            "    holder.seen = 1\n"
+            "    return holder\n"
+        ),
+        # And the default-argument allow-list admits every shape this package
+        # actually uses. ``target=None`` is ``target_coverage.evaluate``'s and
+        # ``gates.evaluate_gates``' own signature.
+        "a None default": (
+            "def evaluate(s, target=None):\n"
+            "    return target\n"
+        ),
+        "a keyword-only argument with no default at all": (
+            "def evaluate(s, *, outcome):\n"
+            "    return outcome\n"
+        ),
+        "a string default": (
+            "def evaluate(s, label='gate'):\n"
+            "    return label\n"
+        ),
+        "a signed numeric default": (
+            "def evaluate(s, floor=-1.0):\n"
+            "    return floor\n"
+        ),
+        "a tuple-of-constants default": (
+            "def evaluate(s, names=('a', 'b')):\n"
+            "    return names\n"
         ),
     }
     for label, source in permitted.items():

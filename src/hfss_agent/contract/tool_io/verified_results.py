@@ -232,15 +232,28 @@ class MetricsRefused(StrictModel):
 
     WHICH OUTCOMES LAND HERE IS THE PRODUCER'S RULE, NOT THIS SCHEMA'S, and the
     parenthetical that stood here ("outcome ∈ fail / insufficient_evidence") read
-    as though it were this type's. It named two of the four the assembler actually
-    routes here: ``warning`` and ``not_evaluated`` arrive too, which
-    ``test_every_non_passing_outcome_refuses`` pins. ``failing_gates`` is a plain
-    ``list[Finding]`` and always was.
+    as though it were this type's. ``failing_gates`` is a plain ``list[Finding]``
+    and always was.
 
-    What Step 2.6a changed is that two of those four now have somewhere else they
-    may go — see ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``. THE ASSEMBLER HAS NOT
-    MOVED YET (Step 2.6b), so today every non-passing gate still arrives here and
-    ``MetricsComputedWithCaveats`` has no producer.
+    THE ASSEMBLER MOVED AT STEP 2.6b, and the sentences that stood here describing
+    that move as pending are replaced rather than amended, because every clause in
+    them became false at once. ``warning`` and ``insufficient_evidence`` now route
+    to ``MetricsComputedWithCaveats``, which HAS a producer
+    (``metrics.assembler.compute_metrics``). ``fail`` and ``not_evaluated`` still
+    arrive here, each pinned by ``test_a_failing_or_unrun_gate_still_refuses`` —
+    which is one half of the rewritten ``test_every_non_passing_outcome_refuses``
+    this docstring used to name, and naming a test that no longer exists is the
+    other way the old text had gone stale.
+
+    AN OUTCOME NAMED BY NEITHER LIST ALSO ARRIVES HERE, which is how a sixth
+    ``FindingOutcome`` fails closed: the assembler routes on ``"pass"`` and on
+    ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``, and anything in neither refuses.
+
+    ONE THING THE OLD TEXT GOT RIGHT AND IS WORTH KEEPING: when this arm is taken,
+    EVERY non-passing gate travels in ``failing_gates``, including hedgers that
+    would otherwise have qualified. Refusal wins over qualification, and dropping
+    the hedgers would tell a reader less — seeing the ``fail`` without seeing that
+    convergence also stopped short is a smaller picture of the same solve.
 
     ``failing_gates`` IS A MILD MISNOMER for a warning or a not-evaluated gate.
     Kept, because renaming a field on a live wire shape costs more than the

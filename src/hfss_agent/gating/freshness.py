@@ -33,8 +33,11 @@ That single line is the whole reason ``pass`` and ``fail`` cannot be emitted:
   * ``not_evaluated`` -- CANNOT EMIT. This gate has no precondition that can be
     absent: ``freshness_evidence`` is required on ``SolveState``, and the other arm
     is a REPORTED ABSENCE rather than a missing input. Contrast the target-coverage
-    gate, which genuinely can be handed no target; that is the one gate for which
-    ``not_evaluated`` is reachable.
+    gate, which genuinely can be handed no target -- and which STILL does not emit
+    ``not_evaluated``: Neda ruled that case shows the numbers under a notice, so it
+    emits ``insufficient_evidence``. NO GATE IN THIS PACKAGE EMITS
+    ``not_evaluated`` on any input; the package-wide record of that, and why each
+    gate cannot, is in ``common.py`` beside ``CLASSIFICATION_BY_OUTCOME``.
 
 THE DECISION AND WHY THE ALTERNATIVES LOST (Arash's call, Step 2.6b Part 3b).
 The governing fact is that ``real_adapter.py:575-577`` constructs

@@ -19,8 +19,11 @@ indistinguishable from an unconsidered one (ADR-29 dec. 4):
     can be absent. ``selection`` is required on every ``DesignSnapshot`` and
     ``solve_state`` is present in one arm or the other, so there is always
     something to read. Contrast the target-coverage gate, which genuinely can be
-    handed no target at all; that is the one gate for which ``not_evaluated`` is
-    reachable.
+    handed no target at all -- and which STILL does not emit ``not_evaluated``:
+    Neda ruled that case shows the numbers under a notice, so it emits
+    ``insufficient_evidence``. NO GATE IN THIS PACKAGE EMITS ``not_evaluated`` on
+    any input; the package-wide record of that, and why each gate cannot, is in
+    ``common.py`` beside ``CLASSIFICATION_BY_OUTCOME``.
 
 THE ABSENCE-ARM MAPPING IS EXHAUSTIVE OVER THE PINNED LITERAL SET, BY LOOKUP AND
 WITH NO DEFAULT -- see ``_ABSENCE_OUTCOMES``.

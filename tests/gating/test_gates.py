@@ -24,6 +24,8 @@ from typing import Any, get_args
 
 import pytest
 from gating_helpers import (
+    PROJECT_PATH,
+    chain,
     empty_solved_data,
     intent,
     matching_entry,
@@ -41,6 +43,7 @@ from hfss_agent.contract import (
     ConvergenceStatus,
     DesignSnapshot,
     Finding,
+    IntentObject,
     SolutionExists,
     SolveDataUnavailable,
     SolveDataUnavailableReason,
@@ -362,11 +365,16 @@ def test_the_absence_field_names_the_field_each_gate_actually_narrows(
     silently exercising the present arm while claiming the absent one. Naming the
     invariant is what stops that degradation being invisible.
 
-    THE SECOND ASSERTION IS THE GENUINELY NEW ONE. It proves the blanking is
-    TARGETED: the other absence-carrying field is still present, so this gate is
-    being handed a snapshot where exactly one arm flipped. A never-solved snapshot
-    (both fields blank) would satisfy the first assertion for free and would test
-    nothing about which field belongs to which gate.
+    THE SECOND ASSERTION IS ABOUT THE FIXTURE, NOT THE PRODUCT, and that is worth
+    saying plainly rather than letting it read as extra coverage. It reads ``snap``
+    and never touches the finding, so NO CHANGE ANYWHERE UNDER ``src/`` CAN BREAK
+    IT -- it makes no claim about a gate. What it pins is that the blanking is
+    TARGETED: exactly one absence-carrying field flipped and the other is still
+    present, so the assertion above it is being made about a gate handed a
+    one-armed snapshot. A never-solved snapshot (both fields blank) would satisfy
+    that assertion for free while testing nothing about which field belongs to
+    which gate. Guarding the SETUP of a test is worth an assertion; it is just not
+    the same kind of worth as a claim about behaviour.
     """
     field = _ABSENCE_FIELD[gate_name]
     snap = snapshot(**{field: unavailable("not_exposed_by_pyaedt")})
@@ -667,15 +675,43 @@ def test_no_gate_ever_claims_an_engine_version(gate_name: str) -> None:
     assert _run(gate_name, snapshot()).provenance.engine_version is None
 
 
-def test_the_provenance_carries_no_filesystem_path() -> None:
-    """``Selection.project`` is the bare NAME (ADR-28), and a finding leaves.
+def test_the_input_carries_the_path_and_the_provenance_does_not() -> None:
+    """BOTH SIDES IN ONE TEST, on ``tests/snapshot/test_path_is_dropped.py``'s
+    precedent: "a test asserting only the absence would pass against a helper that
+    never supplied a path".
 
-    The helper's selection chain deliberately carries a real Windows project path
-    -- one that embeds an operator account name -- so W-8's drop is exercised
-    rather than arranged away. A finding travels to W-10 and into a tool response,
-    so a path reaching the provenance would leave this process.
+    THAT IS NOT HYPOTHETICAL HERE -- it was measured. Dropping ``path=`` from
+    ``gating_helpers.chain()`` left the absence-only version of this test GREEN,
+    because a path that was never supplied cannot reach a provenance. The
+    assertions above the blank line are the positive limb that closes it: the
+    SAME chain object that builds the snapshot is shown to carry a real Windows
+    path embedding an operator account name, so W-8's drop is exercised rather
+    than arranged away. A finding travels to W-10 and into a tool response, so a
+    path reaching the provenance would leave this process.
+
+    WHY SUBSTRING FRAGMENTS AND NOT THE WHOLE PATH -- worth stating, because the
+    precedent file documents a trap this version sidesteps rather than solves.
+    ``json.dumps`` DOUBLES a backslash, so ``PROJECT_PATH in model_dump_json()`` is
+    False even when the path is genuinely present; that file asserts the trap
+    directly in ``test_the_control_is_not_defeated_by_backslash_escaping`` and
+    walks the dumped dict instead of the JSON text. The three fragments below
+    contain no backslash, so they survive serialization unchanged and a substring
+    check over the JSON is sound. That is a property of these three strings, not a
+    general licence: any assertion here that named a separator would need the
+    dumped-dict walk.
     """
-    provenance = solution_exists.evaluate(snapshot()).provenance
+    supplied = chain()
+    assert supplied.project is not None
+    assert supplied.project.path == PROJECT_PATH
+    # The fragments the absence half looks for are really in the input, so the
+    # check below is looking for something that was there to be dropped.
+    for fragment in ("Ansoft", "Owner", ".aedt"):
+        assert fragment in PROJECT_PATH
+
+    provenance = solution_exists.evaluate(
+        snapshot(selection=supplied)
+    ).provenance
+
     serialized = provenance.model_dump_json()
     assert "Ansoft" not in serialized
     assert "Owner" not in serialized
@@ -855,20 +891,21 @@ def test_freshness_never_claims_the_results_are_current() -> None:
 def test_every_gate_module_in_the_package_is_under_test() -> None:
     """No gate module may exist without appearing in this suite's registry.
 
-    REPLACED A TEST THAT COMPARED TWO LISTS I HAD WRITTEN IN THE SAME CHANGE. That
-    version asserted the test module's ``_GATES`` equalled a ``BUILT_GATES``
-    constant in the helper file, which nothing else read -- so the constant existed
-    only to be compared against, and both could drift together and stay green. It
-    said nothing about ``hfss_agent`` at all.
+    THE CONSTRAINED SIDE IS THE PACKAGE DIRECTORY, NOT A SECOND LIST IN THE TEST
+    TREE, and that is what makes the check about ``hfss_agent`` rather than about
+    this file. A registry compared against another hand-written registry can drift
+    in both places at once and stay green, because nothing outside the tests reads
+    either one. Comparing against what is actually on disk under
+    ``hfss_agent.gating`` cannot drift that way.
 
-    This one reads the PACKAGE DIRECTORY instead, so the failure it catches is the
-    real one: Part 4 adding ``target_coverage.py`` (or ``freshness.py``, if the
-    escalation resolves that way) and forgetting to register it here, which would
-    leave a shipped gate with no test and a green suite.
+    THE FAILURE IT CATCHES: a gate module added to the package and not registered
+    here, which would leave a shipped gate with no test at all behind a green
+    suite.
 
-    ``common`` is excluded because it is the shared primitives module, not a gate;
-    a gate is identified by exposing ``evaluate``, which is asserted rather than
-    assumed.
+    ``common`` and ``gates`` are excluded because they are the shared primitives
+    and the aggregator, not gates. A gate is identified by exposing ``evaluate``,
+    which is asserted in both directions below rather than assumed -- so the
+    exclusion list cannot be used to hide one.
     """
     package_dir = Path(gating.__file__).parent
     modules = {
@@ -1007,6 +1044,108 @@ def test_a_zero_hz_target_is_supplied_not_absent() -> None:
     assert finding.outcome == "fail"
 
 
+# NaN AND THE TWO INFINITIES, WITH THEIR ``repr`` -- which is what the gate
+# records, because the float itself cannot cross the JSON boundary intact.
+_NON_FINITE_TARGETS = {"nan": float("nan"), "inf": float("inf"), "-inf": float("-inf")}
+
+
+@pytest.mark.parametrize("rendered", sorted(_NON_FINITE_TARGETS))
+@pytest.mark.parametrize("via", ["parameter", "intent"])
+def test_a_non_finite_target_is_refused_rather_than_judged(
+    rendered: str, via: str
+) -> None:
+    """A NaN OR AN INFINITY IS NOT A TARGET, so this is the no-target shape.
+
+    WHAT THIS REPLACES, stated because the old behaviour looked plausible:
+    ``lowest <= nan <= highest`` is ``False``, so an unguarded non-finite target
+    took the containment gate's ``fail`` arm and rendered "the target frequency nan
+    Hz lies OUTSIDE the solved sweep" with ``held=True`` beside it. Both halves
+    were false. NaN is not outside an interval -- it is not on the line -- and
+    ``held`` claimed the conditions for applying a containment rule had been met
+    when the value could not be compared at all.
+
+    BOTH SOURCES, because both can carry one: the explicit parameter is an
+    ordinary float, and ``IntentObject.target_frequency_hz`` is a bare ``float``
+    whose pydantic ``allow_inf_nan`` defaults to ``True``, so a NaN VALIDATES into
+    a snapshot. Guarding one and not the other would leave the gate's behaviour
+    depending on which door the value came through.
+    """
+    value = _NON_FINITE_TARGETS[rendered]
+    if via == "parameter":
+        finding = target_coverage.evaluate(snapshot(), value)
+    else:
+        finding = target_coverage.evaluate(snapshot(intent=intent(value)))
+
+    assert finding.outcome == "insufficient_evidence"
+    assert finding.classification == "warning"
+    assert finding.applicability.held is False
+    assert finding.applicability.conditions["target_supplied"] is False
+    # It is NOT reported as the frequency that was tested, because none was.
+    assert "target_frequency_hz" not in finding.observed_values
+    # But it is not silently swallowed either: the value and its source travel.
+    assert finding.observed_values["rejected_target"] == rendered
+    assert finding.observed_values["rejected_target_source"] == via
+    assert rendered in finding.reason_flagged
+    assert "OUTSIDE" not in finding.reason_flagged
+
+
+def test_a_rejected_target_survives_the_json_boundary_as_a_string() -> None:
+    """ADR-25 dec. 14's DEFECT, and why the value is recorded as ``repr``.
+
+    A ``Finding`` crosses the wire. Pydantic's ``allow_inf_nan`` defaults to
+    ``True``, so a non-finite float VALIDATES into a model, and
+    ``ser_json_inf_nan`` defaults to ``'null'``, so ``model_dump_json()`` then
+    emits ``null`` while ``model_dump()`` keeps the NaN -- an in-process reader and
+    a JSON reader disagreeing about one field. The trap is demonstrated on a real
+    contract model first, so this is not describing a hazard it never showed.
+    """
+    # THE TRAP, on a genuine contract type: the float goes in and ``null`` comes
+    # out, indistinguishable from a field nobody filled.
+    poisoned = IntentObject(
+        target_frequency_hz=float("nan"), threshold_type="s11", threshold_value=-10.0
+    )
+    assert '"target_frequency_hz":null' in poisoned.model_dump_json()
+
+    # AND THE GATE SIDESTEPS IT. The rejected value is a string, so both readers
+    # see the same thing and can tell WHICH non-finite value arrived.
+    finding = target_coverage.evaluate(snapshot(), float("-inf"))
+    assert '"rejected_target":"-inf"' in finding.model_dump_json()
+    assert finding.model_dump()["observed_values"]["rejected_target"] == "-inf"
+
+
+def test_a_non_finite_parameter_does_not_fall_through_to_the_intent() -> None:
+    """REJECTION IS NOT A FALLBACK, and the intent still travels regardless.
+
+    The caller named something. Quietly answering about the design's stated intent
+    instead would answer a different question than the one asked, with nothing in
+    the result to show it happened -- the same wrong kind of helpful the 0.0 Hz
+    case already refuses. The surviving intent is recorded anyway, so a reader can
+    see it was available and was NOT substituted.
+    """
+    snap = snapshot(intent=intent(2.4e9))
+    finding = target_coverage.evaluate(snap, float("nan"))
+    assert finding.outcome == "insufficient_evidence"
+    assert finding.observed_values["rejected_target_source"] == "parameter"
+    assert finding.observed_values["intent_target_frequency_hz"] == 2.4e9
+    # And the intent is not claimed as inspected -- it was not what was read.
+    assert "intent.target_frequency_hz" not in finding.inspected
+
+
+def test_a_refused_target_reads_differently_from_no_target_at_all() -> None:
+    """Same outcome, two situations a user resolves two different ways.
+
+    "You gave me nothing" and "you gave me a NaN" both yield
+    ``insufficient_evidence``, and a reader who sees only the outcome cannot tell
+    which. The first is fixed by supplying a frequency; the second by fixing the
+    one already supplied.
+    """
+    absent = target_coverage.evaluate(snapshot())
+    refused = target_coverage.evaluate(snapshot(), float("nan"))
+    assert absent.outcome == refused.outcome == "insufficient_evidence"
+    assert absent.reason_flagged != refused.reason_flagged
+    assert "rejected_target" not in absent.observed_values
+
+
 def test_an_empty_sweep_is_insufficient_evidence() -> None:
     """No range to test containment against, even with a target in hand."""
     snap = snapshot(solved_data=empty_solved_data())
@@ -1143,11 +1282,18 @@ def test_not_evaluated_is_unreachable_across_every_gate_and_input_shape() -> Non
     """ENUMERATED, not asserted: no gate emits ``not_evaluated`` on any input.
 
     ``FindingOutcome`` has five members and this package produces four of them,
-    which reads as a gap unless something says otherwise. The record lives at
-    ``common.NOT_EVALUATED_IS_UNREACHABLE_IN_GATING``; this is its behavioural
-    half, swept over every snapshot shape the suite can build -- both arms of both
-    absence-carrying fields, every convergence status, every reason literal, with
-    and without a target, with and without an intent.
+    which reads as a gap unless something says otherwise. The prose record lives
+    in ``gating/common.py`` beside ``CLASSIFICATION_BY_OUTCOME``, with a line per
+    gate for why it cannot emit one; THIS TEST IS THE ONLY ENFORCEMENT, swept over
+    every snapshot shape the suite can build -- both arms of both absence-carrying
+    fields, every convergence status, every reason literal, with and without a
+    target, with and without an intent.
+
+    IT USED TO SHARE THE JOB WITH A FLAG. ``common`` exported
+    ``NOT_EVALUATED_IS_UNREACHABLE_IN_GATING = True``, read by no product code, and
+    the last line here asserted it was ``True`` -- a binding that could not be
+    false, checked by an assertion that could not fail. Both are gone; the sweep
+    below is what was doing the work all along.
 
     A NEW GATE THAT EMITS ``not_evaluated`` FAILS HERE, which is the point: the
     exclusion of that member from ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION`` means
@@ -1179,7 +1325,6 @@ def test_not_evaluated_is_unreachable_across_every_gate_and_input_shape() -> Non
     # The complement, so this cannot pass by the sweep being too narrow to reach
     # anything: all four other members ARE produced across these shapes.
     assert seen == {"pass", "fail", "warning", "insufficient_evidence"}
-    assert gating_common.NOT_EVALUATED_IS_UNREACHABLE_IN_GATING is True
 
 
 # --- 11. reason_flagged carries what `outcome` cannot ------------------------

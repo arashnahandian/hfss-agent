@@ -89,7 +89,7 @@ def evaluate_gates(
 ) -> list[Finding]:
     """Run the four validity gates and return their findings, in order.
 
-    A PURE FUNCTION OF ITS ARGUMENTS. It reads a clock, mints no identifier, and
+    A PURE FUNCTION OF ITS ARGUMENTS. It reads NO clock, mints no identifier, and
     reaches nothing -- so the same snapshot yields byte-identical findings forever,
     which is the property ADR-30 dec. 2 relies on when it refuses an
     ``evaluated_at`` field on ``FindingProvenance``.

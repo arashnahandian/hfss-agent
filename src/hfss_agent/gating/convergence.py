@@ -5,11 +5,13 @@ NEDA'S RULING GOVERNS THIS GATE (ADR-30 dec. 6), in her own words:
     "there should be a warning that solution didn't converge because result
     maybe wrong"
 
-and, asked how HFSS itself behaves:
+and, asked how HFSS itself behaves (spelling normalised, no word changed --
+four keyboard slips, five characters: ``doesnt`` -> ``doesn't``, ``poping`` ->
+``popping``, ``didnt`` -> ``didn't``, ``foesnt`` -> ``doesn't``):
 
-    "during the solve if it doesnt reach convergence there is a warning in AEDT
-    message manager window poping warning that solution didnt converge this
-    foesnt stop it though, it go to the frequency sweep"
+    "during the solve if it doesn't reach convergence there is a warning in AEDT
+    message manager window popping warning that solution didn't converge this
+    doesn't stop it though, it go to the frequency sweep"
 
 Translated into this codebase's vocabulary -- the translation is OURS and is
 labelled as such -- ``stopped`` emits ``warning``, and ``warning`` no longer

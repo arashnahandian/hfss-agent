@@ -19,7 +19,8 @@ omission is indistinguishable from an unconsidered one):
     gate's limitations rather than being converted into a verdict.
 
 ``not_evaluated`` IS ALSO UNREACHABLE HERE, and this gate is why the package-wide
-record of that exists -- see ``common.NOT_EVALUATED_IS_UNREACHABLE_IN_GATING``.
+record of that exists -- see the note in ``common.py`` beside
+``CLASSIFICATION_BY_OUTCOME``.
 This was the last candidate: no target from either source is the one case in the
 whole gate set where "the check did not run" was the honest English. Neda ruled it
 shows numbers, so it emits ``insufficient_evidence``. The reasoning is in that
@@ -75,6 +76,16 @@ recoverable from the finding alone -- a ``Finding`` is rendered without the
 snapshot beside it, and a reader who cannot see the intent cannot otherwise tell
 that the parameter overrode one.
 
+A NON-FINITE TARGET IS NOT A TARGET, and is refused before the containment test
+rather than judged by it. ``IntentObject.target_frequency_hz`` is a bare ``float``
+and pydantic's ``allow_inf_nan`` defaults to ``True``, so a NaN or an infinity
+reaches this gate from either source. Unguarded, ``lowest <= nan <= highest``
+evaluates ``False`` and the gate reported ``fail`` with ``held=True`` and the
+sentence "lies OUTSIDE the solved sweep" -- a claim that is not true of a value
+which is not on the line at all. It is now ``insufficient_evidence`` with
+``held=False``, the same shape as no target; ``_non_finite_evidence`` carries the
+full reasoning and the serialization defect it also closes.
+
 THE ABSENCE ARM IS ``solved_data``'s, NOT ``solve_state``'s. The two are
 independent fields that happen to share the ``SolveDataUnavailable`` type, and
 nothing may assume a gate's absence row carries over from a sibling: this gate's
@@ -111,6 +122,9 @@ RULE_PURPOSE = (
 )
 
 LIMITATIONS = (
+    "A NON-FINITE TARGET IS REFUSED RATHER THAN JUDGED: a NaN or an infinity names "
+    "no point on the frequency axis, so it is reported as no target at all and "
+    "never as a coverage failure. "
     "The bounds are the lowest and highest SWEPT frequencies, so coverage is "
     "bounded by the sweep's extent and not by its step size. A target inside the "
     "range but between two samples IS covered; the value at it is interpolated by "
@@ -128,6 +142,18 @@ LIMITATIONS = (
 # leave a caller unable to tell whether their explicit argument had been honoured.
 SOURCE_PARAMETER = "parameter"
 SOURCE_INTENT = "intent"
+
+# INFINITY, BUILT FROM A BUILTIN BECAUSE ``math`` IS NOT IMPORTABLE HERE. The
+# allow-list in Part 5's import audit names no standard-library module at all, and
+# ``math`` is the plausible candidate it says would have to be added in a reviewed
+# diff. It is not needed: ``value != value`` is true for NaN and for nothing else,
+# and the two infinities compare exactly.
+_INFINITY = float("inf")
+
+
+def _is_finite(value: float) -> bool:
+    """Whether a float is a real number rather than NaN or an infinity."""
+    return value == value and -_INFINITY < value < _INFINITY
 
 # EXHAUSTIVE OVER ``SolveDataUnavailableReason``, AS A LOOKUP WITH NO DEFAULT.
 # DERIVED FOR ``solved_data``, NOT COPIED FROM A SIBLING. The three other gates
@@ -191,16 +217,92 @@ def evaluate(
     else:
         target, source = None, None
 
+    # A NON-FINITE TARGET IS NOT A TARGET, so this is the SAME SHAPE as no target
+    # at all rather than a coverage verdict. See ``_non_finite_evidence``.
+    #
+    # THE REJECTION HAPPENS AFTER PRECEDENCE, NEVER AS A FALLBACK. A NaN parameter
+    # does not fall through to the intent: the caller named something, and
+    # answering a different question than the one asked is the same wrong kind of
+    # helpful the 0.0 Hz case refuses one branch up. The intent still TRAVELS in
+    # the evidence when it survives, so a reader can see it was not substituted.
+    non_finite: dict[str, object] | None = None
+    if target is not None and not _is_finite(target):
+        non_finite = _non_finite_evidence(target, source)
+        target, source = None, None
+    if intent_target is not None and not _is_finite(intent_target):
+        # Never echoed as a number: a NaN or an infinity in ``observed_values``
+        # serializes to JSON ``null`` while ``model_dump()`` keeps it, so an
+        # in-process reader and a wire reader would disagree about one field.
+        intent_target = None
+
     solved_data = snapshot.solved_data
     if isinstance(solved_data, SolvedData):
         return _from_solved_data(
-            snapshot, solved_data, target, source, intent_target
+            snapshot, solved_data, target, source, intent_target, non_finite
         )
-    return _from_absence(snapshot, solved_data, target, source, intent_target)
+    return _from_absence(
+        snapshot, solved_data, target, source, intent_target, non_finite
+    )
+
+
+def _non_finite_evidence(value: float, source: str | None) -> dict[str, object]:
+    """The evidence fragment for a target that is NaN or an infinity.
+
+    WHY THIS IS ``insufficient_evidence`` AND NOT ``fail``, which is what the
+    containment test alone would have produced. ``lowest <= nan <= highest`` is
+    ``False``, so an unguarded NaN took the ``fail`` arm and rendered "the target
+    frequency nan Hz lies OUTSIDE the solved sweep" -- A CLAIM THAT IS NOT TRUE.
+    NaN is neither inside nor outside an interval; it is not on the line. ``held``
+    came out ``True`` beside it, asserting that the conditions for applying a
+    containment rule had been met when the value could not be compared at all.
+
+    This is the distinction the whole package is built on and that this module's
+    own ``_ABSENCE_OUTCOMES`` comment already draws for ``no_solution``: the
+    ABSENCE of an observation is not a NEGATIVE one, and ``fail`` asserts something
+    IS wrong. So a non-finite target is treated exactly as no target -- the gate
+    reports it could not check rather than reporting a verdict it cannot support.
+
+    THE INFINITIES GO THE SAME WAY AS NaN, and uniformly rather than case by case.
+    ``+inf`` genuinely does lie outside every finite sweep, so ``fail`` would be
+    defensible English for that one member -- but it is not a frequency any solver
+    can be asked about, and it carries the identical serialization defect below.
+    Splitting the two would buy a true sentence about an unaskable question at the
+    cost of a rule with two arms where one will do.
+
+    THE VALUE IS RECORDED AS A STRING, and that is the second half of the fix.
+    ``Finding.observed_values`` crosses the wire: pydantic's ``allow_inf_nan``
+    defaults to ``True`` so a NaN VALIDATES, and ``ser_json_inf_nan`` defaults to
+    ``'null'`` so ``model_dump_json()`` then emits ``null`` while ``model_dump()``
+    keeps the NaN. A reader of the JSON could not tell "a non-finite target was
+    supplied" from "no target was supplied", which is exactly the divergence the
+    metrics layer refuses one seam over. ``repr`` renders ``'nan'``, ``'inf'`` and
+    ``'-inf'``, which survive serialization and say which one arrived.
+
+    THE CONTRACT IS NOT CHANGED. ``IntentObject.target_frequency_hz`` stays a bare
+    ``float``; constraining it there would be a semver event, and it would still
+    leave the explicit parameter unguarded. This is the gate's own input check.
+    """
+    return {
+        "rejected_target": repr(value),
+        "rejected_target_source": source,
+    }
+
+
+def _non_finite_sentence(non_finite: dict[str, object]) -> str:
+    """The user-facing half of the rejection, naming the value and its source."""
+    return (
+        f"The target frequency supplied by the {non_finite['rejected_target_source']} "
+        f"is {non_finite['rejected_target']}, which is not a finite frequency, so "
+        "it names no point on the frequency axis and nothing could be checked "
+        "against it. It is neither inside nor outside the solved sweep."
+    )
 
 
 def _target_evidence(
-    target: float | None, source: str | None, intent_target: float | None
+    target: float | None,
+    source: str | None,
+    intent_target: float | None,
+    non_finite: dict[str, object] | None,
 ) -> dict[str, object]:
     """The target half of ``observed_values``, shared by both arms.
 
@@ -209,12 +311,23 @@ def _target_evidence(
     ABSENCE ambiguous -- a reader could not tell "there was no intent" from "the
     intent agreed" -- and the first is a fact about the design while the second is
     a fact about the call.
+
+    A REJECTED TARGET IS REPORTED UNDER ITS OWN KEYS, never under
+    ``target_frequency_hz``. That field means "the frequency this gate tested
+    against", and nothing was tested; reusing it for a value the gate refused would
+    make the two indistinguishable to every downstream reader.
     """
     evidence: dict[str, object] = {}
     if target is not None:
         evidence["target_frequency_hz"] = target
         evidence["target_source"] = source
         if source == SOURCE_PARAMETER and intent_target is not None:
+            evidence["intent_target_frequency_hz"] = intent_target
+    elif non_finite is not None:
+        evidence.update(non_finite)
+        # A surviving intent still travels: without it a reader could not tell
+        # that the gate declined to substitute one for the value it refused.
+        if intent_target is not None:
             evidence["intent_target_frequency_hz"] = intent_target
     return evidence
 
@@ -225,16 +338,22 @@ def _from_solved_data(
     target: float | None,
     source: str | None,
     intent_target: float | None,
+    non_finite: dict[str, object] | None,
 ) -> Finding:
     """The arm where a series was read. Three outcomes are reachable here."""
     frequencies = solved_data.frequencies
     inspected = ["solved_data.frequencies"]
-    if source == SOURCE_INTENT:
+    if source == SOURCE_INTENT or (
+        non_finite is not None
+        and non_finite["rejected_target_source"] == SOURCE_INTENT
+    ):
         # Named ONLY when the intent was the source actually used, so ``inspected``
         # records what the judgment rested on rather than everything glanced at.
+        # A REJECTED intent value counts as used: the gate read it and acted on
+        # what it found, which is what ``inspected`` records.
         inspected.append("intent.target_frequency_hz")
 
-    observed = _target_evidence(target, source, intent_target)
+    observed = _target_evidence(target, source, intent_target, non_finite)
     observed["sample_count"] = len(frequencies)
     conditions: dict[str, object] = {
         "solved_data_readable": True,
@@ -265,16 +384,25 @@ def _from_solved_data(
         )
 
     if target is None:
-        # NEDA'S CASE. Not ``not_evaluated`` -- see the module docstring.
+        # NEDA'S CASE. Not ``not_evaluated`` -- see the module docstring. The
+        # non-finite case lands here too and takes the same outcome, because it is
+        # the same situation: there is no frequency to check against.
+        cause = (
+            _non_finite_sentence(non_finite)
+            if non_finite is not None
+            else (
+                "No target frequency was supplied by the caller and the design "
+                "carries no intent, so nothing could be checked at a specific "
+                "frequency."
+            )
+        )
         return _build(
             snapshot,
             outcome="insufficient_evidence",
             inspected=inspected,
             observed_values=observed,
             reason_flagged=(
-                "No target frequency was supplied by the caller and the design "
-                "carries no intent, so nothing could be checked at a specific "
-                f"frequency. The solved sweep runs from {lowest!r} Hz to "
+                f"{cause} The solved sweep runs from {lowest!r} Hz to "
                 f"{highest!r} Hz across {len(frequencies)} sample(s). A target is "
                 "never assumed or defaulted."
             ),
@@ -303,12 +431,17 @@ def _from_absence(
     target: float | None,
     source: str | None,
     intent_target: float | None,
+    non_finite: dict[str, object] | None,
 ) -> Finding:
     """The arm where no solved data was read; there is no range at all."""
     outcome = _ABSENCE_OUTCOMES[solved_data.reason]
-    observed = _target_evidence(target, source, intent_target)
+    observed = _target_evidence(target, source, intent_target, non_finite)
     observed["reason"] = solved_data.reason
     observed["limitation"] = solved_data.limitation
+    # The absence of a range is the blocking fact here and is stated first; a
+    # rejected target is stated after it rather than instead of it, because both
+    # are true and a reader fixing one would otherwise hit the other unannounced.
+    rejection = "" if non_finite is None else f" {_non_finite_sentence(non_finite)}"
     return _build(
         snapshot,
         outcome=outcome,
@@ -317,7 +450,7 @@ def _from_absence(
         reason_flagged=(
             "The snapshot carries no solved data, so there is no swept frequency "
             "range to test a target against. The reason given is "
-            f"{solved_data.reason!r}: {solved_data.limitation}"
+            f"{solved_data.reason!r}: {solved_data.limitation}{rejection}"
         ),
         conditions={
             "solved_data_readable": False,

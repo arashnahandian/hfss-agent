@@ -332,9 +332,14 @@ class FindingProvenance(StrictModel):
     # the only place it can record it — ``Finding.rule_version`` carries the
     # RULE's version, which is a different fact about a different thing.
     #
-    # STATED PRECISELY, BECAUSE A READER CAN CHECK IT: neither producer exists
-    # yet (W-9 is Step 2.6b, E-2 is Step 2.10), so today the field is filled by
-    # nobody. What makes it committed rather than speculative is the seam —
+    # STATED PRECISELY, BECAUSE A READER CAN CHECK IT — AND IT CHANGED AT STEP
+    # 2.6b: W-9 HAS SHIPPED and E-2 is still Step 2.10, so ONE of the two
+    # producers exists today. THE FIELD IS STILL FILLED BY NOBODY, which is the
+    # half that matters here and is now true for a stronger reason than absence:
+    # ``gating.common.gate_provenance`` leaves it at its default BY CONSTRUCTION,
+    # because a gate has no engine behind it and never will. That is the honest
+    # side of the rule above rather than an unfinished implementation.
+    # What makes the field committed rather than speculative is the seam —
     # ``evaluate(DesignSnapshot) -> list[Finding]`` is pinned across both repos,
     # and ``FindingSource`` carries ``engine_rule`` for exactly that traffic. If
     # that seam is ever withdrawn, this field loses its justification and should

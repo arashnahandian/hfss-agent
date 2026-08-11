@@ -272,8 +272,9 @@ class MetricsAssemblyError(Exception):
     RAISED, NOT RETURNED, and forced by the contract rather than chosen. The
     FOUR arms of ``ComputeMetricsResult`` are a populated ``MetricsComputed``,
     a ``MetricsComputedWithCaveats`` carrying numbers beside the gate results
-    that hedge them (added at Step 2.6a; no producer here yet, Step 2.6b), a
-    ``MetricsRefused`` carrying gate results, and a ``CannotEvaluate``
+    that hedge them (added at Step 2.6a; ``compute_metrics`` below became its
+    producer at Step 2.6b), a ``MetricsRefused`` carrying gate results, and a
+    ``CannotEvaluate``
     ("PyAEDT could not evaluate this"). None can say "the gates passed and the
     data arrived, but nothing computable was in it". Borrowing ``CannotEvaluate``
     would blame the solver for a wrapper-side or upstream-data problem -- the
@@ -371,9 +372,25 @@ def compute_metrics(
     ever added, this shortcut would be the first thing to break, and correctly.
 
     Returns:
-        ``MetricsComputed`` with at least one record when every supplied gate
-        passed; ``MetricsRefused`` with the non-passing gates otherwise. Never
-        ``MetricsComputed`` with an empty list.
+        One of THREE arms, decided by ``_route_gates`` and never by anything
+        computed from the data:
+
+          * ``MetricsComputed`` with at least one record, when every supplied gate
+            returned ``pass``. Never with an empty list.
+          * ``MetricsComputedWithCaveats`` with at least one record AND the
+            non-passing gates that qualify them, when every non-passing gate's
+            outcome is on ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION``
+            (``warning`` or ``insufficient_evidence``). This is the ORDINARY arm
+            on a real design, because the freshness gate reports currency
+            undeterminable unconditionally.
+          * ``MetricsRefused`` with every non-passing gate and no numbers of any
+            kind, when at least one gate refuses -- an outcome named by neither
+            list, which today means ``fail`` or ``not_evaluated``, and which a
+            sixth ``FindingOutcome`` would join by default. An EMPTY
+            ``gate_findings`` refuses here too.
+
+        The fourth arm of ``ComputeMetricsResult``, ``CannotEvaluate``, is not
+        produced by this function: nothing here reaches PyAEDT.
 
     Raises:
         MetricsAssemblyError: if the solved data holds no ``S(1,1)`` series, or

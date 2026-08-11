@@ -102,6 +102,15 @@ CLASSIFICATION_BY_OUTCOME: dict[FindingOutcome, FindingClassification] = {
 # NO GATE IN THIS PACKAGE EMITS ``not_evaluated``. FOUR OF THE FIVE OUTCOMES ARE
 # REACHABLE ACROSS THE GATE SET, AND THAT IS COMPLETE RATHER THAN A GAP.
 #
+# PROSE AND NOT A CONSTANT, WHICH IS A CHANGE FROM HOW THIS SHIPPED. It was a
+# module-level ``NOT_EVALUATED_IS_UNREACHABLE_IN_GATING = True`` that no product
+# code read and whose only assertion was ``assert ... is True`` -- a binding that
+# could not be false, restated by a test that could not fail. The FACT is worth
+# recording and the BINDING was not: what actually enforces it is
+# ``test_not_evaluated_is_unreachable_across_every_gate_and_input_shape``, which
+# sweeps every snapshot shape the suite can build and would fail the day a gate
+# emitted one. A flag beside that test would only be a second place to update.
+#
 # RECORDED HERE, IN THE SHARED MODULE, AND THE PLACEMENT IS DELIBERATE. The map
 # directly above is the only place all five members are written out, so a reader
 # meeting the fifth is exactly the reader who will wonder why it never appears in
@@ -135,7 +144,6 @@ CLASSIFICATION_BY_OUTCOME: dict[FindingOutcome, FindingClassification] = {
 # guards an EMPTY SET as far as gating is concerned. It is kept because the set
 # stops being empty the day E-2 lands, and because an allow-list that admits a
 # state no one has ruled on is the rot ADR-27 dec. 14 named.
-NOT_EVALUATED_IS_UNREACHABLE_IN_GATING = True
 
 
 def applicability(conditions: dict[str, object]) -> Applicability:
