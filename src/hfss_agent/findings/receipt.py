@@ -875,8 +875,28 @@ def _claimed_finding_id(candidate: object) -> str | None:
 
     Returns:
         The string, or ``None`` when it is not readable as one. UNTRUSTED when
-        present -- it is engine-authored text that has passed no gate, and the
-        envelope for it is Part 4's.
+        present -- it is engine-authored text that has passed no gate.
+
+    STILL VERBATIM AFTER PART 4, WHICH IS THE DECISION AND NOT A GAP. This value
+    is carried exactly as it was read: control characters, instruction-shaped
+    text and all. Two reasons, and the first is the load-bearing one.
+
+    A REFUSAL RECORD IS DATA, AND ITS IDENTITY MUST MATCH WHAT THE PRODUCER SENT.
+    A caller correlating a refusal against the finding it handed in has
+    ``arrived_on`` and ``position`` for certain, and this field as the only
+    content-derived handle; editing the value would break exactly the
+    correspondence it exists to provide. ``merge._id_anomalies`` records the same
+    argument at greater length for ``finding_id``, including what sanitizing it
+    would change and why those changes -- though defensible -- lose more than they
+    gain.
+
+    NEUTRALIZATION HAPPENS AT RENDER, NOT HERE, and ``render._refusal_entry`` is
+    the line that does it: the value is quoted as data, labelled CLAIMED rather
+    than verified, and never placed in an instruction position. That is §6.6's own
+    clause (c) remedy, and it is what ``adapter/sanitize`` means by neutralizing
+    through framing rather than rewriting. Clause (b) -- the strip and the cap --
+    belongs to the adapter by §6.6's own words, and this package cannot reach the
+    tools for it in any case (Layer 6 imports ``contract`` only).
     """
     try:
         if isinstance(candidate, dict):

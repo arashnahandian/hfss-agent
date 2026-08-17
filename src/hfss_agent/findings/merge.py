@@ -188,11 +188,48 @@ def _id_anomalies(
     and the same statements execute whatever the ids hold. The id is used as a
     dictionary key exactly as ``Counter`` would use it, and the result is data.
 
+    SANITIZING ``finding_id`` BEFORE THIS PASS WAS CONSIDERED AT PART 4 AND IS
+    DELIBERATELY NOT DONE. It is written here because this is where the next
+    person will be tempted, and because the arguments FOR it are good enough that
+    dropping them would look like nobody had thought of it. Measured, both ways:
+
+      * two ids differing only in control characters -- ``"rule-a\\x1b"`` and
+        ``"rule-a\\x07"`` -- are DISTINCT today and would COLLIDE if stripped;
+      * an id made only of control characters is NON-BLANK today (``str.strip``
+        removes whitespace, and a control character is not whitespace, so it
+        survives) and would become ``unidentified`` if stripped.
+
+    Both changes are arguably improvements, and that is the point: two ids that
+    render identically to a reader ARE indistinguishable, which is exactly what
+    ``id_collisions`` means, and a name made only of invisible characters cannot
+    be referred to.
+
+    THE ARGUMENT AGAINST IS THE ONE THAT WINS, AND IT IS ABOUT CORRESPONDENCE
+    RATHER THAN ABOUT SAFETY. ``RejectedFinding.position`` and the indices in
+    ``id_collisions`` and ``unidentified`` exist so a caller can correlate what
+    this module reports against what it handed in -- that is the whole reason
+    ``merge_findings`` commits to preserving order. The identity W-10 reports must
+    therefore be the identity the PRODUCER emitted; changing the value silently
+    breaks the correspondence, and a caller looking for the id it sent would not
+    find it. Two ids that a reader cannot tell apart is a real problem, but it is
+    a RENDERING problem, and ``render.py`` is where it is addressed -- by framing
+    the value as data, not by editing it. That is the same rule
+    ``adapter/sanitize`` states for hostile content generally: neutralize by
+    framing and typing, never by rewriting.
+
+    W-10 COULD NOT DO IT EVEN IF THE ARGUMENT RAN THE OTHER WAY. ``sanitize_str``
+    and ``MAX_UNTRUSTED_STR_LEN`` live in ``hfss_agent.adapter.sanitize``, which
+    Layer 6 may not import; a hand-rolled second stripper here would be a second
+    enforcement point for one rule, drifting from the adapter's the day either
+    moves.
+
     Returns:
         ``(collisions, unidentified)`` -- groups of indices sharing one non-blank
         id, and the indices whose id is blank. Blank ids never appear in the first
         (see ``FindingReceipt.unidentified`` for why the absence of a name is not
-        a shared name).
+        a shared name). "Blank" means blank AFTER WHITESPACE STRIPPING ONLY: an id
+        of control characters is reported as named, which is counter-intuitive and
+        is pinned by a test for that reason.
     """
     positions_by_id: dict[str, list[int]] = {}
     unidentified: list[int] = []

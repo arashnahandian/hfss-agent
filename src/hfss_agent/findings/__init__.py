@@ -4,8 +4,55 @@ Validates every finding the engine returns against the findings schema and
 rejects malformed or evidence-incomplete findings as protocol errors; refuses any
 finding carrying an object rather than a value in either of the two fields
 pydantic does not validate; merges gate and engine findings with per-finding
-source attribution; applies the untrusted-string envelope to every HFSS-sourced
-string.
+source attribution; and frames every untrusted string it hands on as data.
+
+THE ENVELOPE IS FOUR CLAUSES WITH FOUR DIFFERENT ANSWERS HERE, and stating them
+separately is the whole of Part 4 -- an envelope that looks like all four and
+does one would be worse than none. §6.6 requires untrusted strings to be (a)
+carried in fields typed as untrusted, (b) length-capped and control-character
+stripped ON READ IN THE ADAPTER, (c) rendered inside explicit data delimiters,
+and (d) never allowed to influence control flow.
+
+  (a) THE CONTRACT'S. Satisfied except at the one place recorded at the end of
+      this docstring, which is a gap with no runtime effect.
+  (b) THE ADAPTER'S, in §6.6's own words, and MEASURED to be done: a hostile
+      project name driven through the real path (fake adapter -> session ->
+      ``assemble_snapshot`` -> ``evaluate_gates``) reaches a gate finding with
+      ESC, BEL and NUL already removed and its instruction text intact, and an
+      over-length setup name arrives capped and marked. On a gate finding the
+      ONLY fields carrying HFSS text are the five selection names on
+      ``provenance``; none of the eleven free-text fields on ``Finding`` itself
+      carries any. THIS PACKAGE ADDS NO CAPPING AND NO STRIPPING, on either
+      stream. Not as an exemption -- there is no branch on source anywhere in the
+      accept-or-refuse path or in the renderer, so there is no source for which a
+      requirement could be relaxed. It is that ``sanitize_str`` and
+      ``MAX_UNTRUSTED_STR_LEN`` live in ``hfss_agent.adapter.sanitize``, which
+      Layer 6 may not import, and a hand-rolled second stripper with an invented
+      cap would be a second enforcement point drifting from the first -- the
+      shape ``validate_native/assembler.py`` refused one layer closer to the
+      constant: "Naming a number we cannot read would be worse than not naming
+      it."
+  (c) THIS PACKAGE'S, and it is what ``render.py`` builds. Engine-authored text
+      never came through the adapter and has had nothing removed from it; framing
+      it as data, attributed, is the remedy §6.6 actually prescribes and the one
+      ``adapter/sanitize`` describes as neutralizing "by framing/typing ... never
+      by rewriting".
+  (d) A PROPERTY OF THIS PACKAGE, PROVEN RATHER THAN IMPLEMENTED -- see below.
+
+CLAUSE (d), STATED NARROWLY ENOUGH TO BE TRUE. The tempting claim is "no
+untrusted string reaches a branch anywhere in this package", and it is FALSE:
+``merge._id_anomalies`` tests ``finding_id.strip()`` for blankness, the evidence
+rules test the same of their fields, and ``receipt._schema_detail`` tests an
+engine-chosen field name for membership in ``Finding.model_fields``. The true
+claim is §6.6(d)'s own list: NO UNTRUSTED STRING SELECTS A TOOL, A TIER, A FILE
+PATH, OR ANY CODE PATH REACHING A CAPABILITY. The three branches that do read
+untrusted strings read only BLANKNESS -- never what a string says -- or test
+membership in a wrapper-owned allow-list whose polarity can only ever REMOVE
+engine text from output. That is asserted behaviourally by
+``tests/findings/test_untrusted_strings.py``; the STRUCTURAL form of the same
+property is Part 7's audit and is a different claim, not a second copy of this
+one (behavioural says a decision did not change on these inputs; structural says
+no such decision exists to change).
 
 Native HFSS validation does NOT pass through here (ADR-23). It is not a
 ``Finding``, it never enters the merge, and W-6 delivers it as its own
@@ -79,6 +126,7 @@ from hfss_agent.findings.receipt import (
     INERT_LEAF_TYPES,
     validate_finding,
 )
+from hfss_agent.findings.render import findings_template_text
 from hfss_agent.findings.results import (
     FindingReceipt,
     RejectedFinding,
@@ -105,6 +153,11 @@ __all__ = [
     # its own copy of the allow-list would pass while the gate refused everything.
     "ANY_TYPED_FIELDS",
     "INERT_LEAF_TYPES",
+    # §6.6 clause (c): the deterministic findings paragraph, with every untrusted
+    # string framed as data. PUBLIC BUT UNCALLED IN ``src/`` until Step 3.3
+    # composes it -- the same deliberate trade ``native_template_text`` and
+    # ``touchstone_port_count`` already make, for the same reason.
+    "findings_template_text",
     # W-10's own result types. LOCAL, NOT CONTRACT -- see the module docstring
     "FindingReceipt",
     "RejectedFinding",
