@@ -11,8 +11,10 @@ WHAT THIS FILE DOES NOT COVER, so an absence is not read as an oversight:
 evidence-completeness (an empty ``inspected`` or ``reason_flagged`` is ACCEPTED
 here, and Part 2 refuses it); merge ordering and ``finding_id`` collision across
 streams (Part 3); the untrusted-string envelope (Part 4 -- and see
-``test_an_untrusted_finding_id_survives_verbatim_today``, which is written to
-FAIL when Part 4 lands); non-inert values in ``observed_values`` (Part 6); and
+``test_claimed_finding_id_carries_untrusted_text_verbatim_by_design``, which
+shipped at Part 1 under a name predicting it would be INVERTED when Part 4
+landed; Part 4 measured that prediction, found it wrong, and renamed the test
+instead of inverting it); non-inert values in ``observed_values`` (Part 6); and
 the import audit (Part 7).
 """
 
@@ -24,17 +26,22 @@ from typing import Any, get_args
 
 import pytest
 from findings_helpers import (
+    CLASS_SPOOF_SHAPES,
     EMPTY_FOR,
+    NON_MAPPING_DUMP_SHAPES,
     NOT_A_FINDING_SHAPES,
     SCHEMA_INVALID_SHAPES,
     DumpsButDoesNotValidate,
     FieldAddingSubclass,
     MethodOnlySubclass,
     RaisesWhileDumping,
+    RaisingClassAttribute,
+    SpoofsFindingAndDumpsValid,
     accepted_gate_findings,
     engine_finding,
     engine_finding_kwargs,
     ghost,
+    ghost_missing,
     swept_gate_findings,
 )
 from pydantic import ValidationError
@@ -278,6 +285,79 @@ def test_a_validate_stage_failure_is_not_blamed_on_the_dump() -> None:
     assert "NOT KNOWABLE HERE" in refusal.detail
 
 
+@pytest.mark.parametrize("label", sorted(CLASS_SPOOF_SHAPES))
+def test_a_class_spoof_is_refused_without_the_detail_claiming_it_was_a_finding(
+    label: str,
+) -> None:
+    """``isinstance`` PASSING IS NOT PROOF OF TYPE, and two details said it was.
+
+    ``__class__`` is an ordinary ASSIGNABLE attribute and ``isinstance`` reads it,
+    so an object whose ``__class__`` returns ``Finding`` passes the type check
+    while being nothing of the kind. Both stage sentences then asserted "the
+    object IS a Finding instance" about it -- an affirmative false claim in a
+    wrapper-authored field, which is the same defect as ``_schema_detail``
+    counting an empty location as an undeclared key.
+
+    TWO ARMS, NOT ONE, AND THE SECOND WAS FOUND BY PROBING RATHER THAN BY READING.
+    A spoof with no ``model_dump`` fails the REDUCTION and gets
+    ``_UNDUMPABLE_DETAIL``; a spoof that reduces fails RE-VALIDATION and gets
+    ``_UNVALIDATABLE_DETAIL``. The first pass at this defect saw only the former,
+    so both are parametrised here and the fix touched both constants.
+
+    THE REPAIR IS TO THE SENTENCE, NOT TO THE GATE, and the companion limb below
+    is what says so: a spoof whose reduction is a VALID payload is ACCEPTED as an
+    exact ``Finding``, correctly. Stage 2's fresh ``model_validate`` is what
+    establishes validity and no ``__class__`` can spoof it -- the type an object
+    claims never mattered, the data it produces does. A test asserting "spoofs are
+    refused" would be asserting something false.
+
+    FAILS IF: either detail returns to asserting the object was a Finding, or the
+    gate starts refusing an object over the type it claimed rather than over the
+    payload it produced (the companion limb fires).
+    """
+    spoof = CLASS_SPOOF_SHAPES[label]
+    # THE PREMISE: it really does pass the type check it has no right to pass.
+    assert isinstance(spoof, Finding)
+    assert type(spoof) is not Finding
+
+    receipt = merge_findings(gate_findings=(), engine_findings=[spoof])
+
+    assert receipt.accepted == ()
+    (refusal,) = receipt.rejected
+    assert refusal.reason == "schema_invalid"
+    # The detail does not assert what nothing established...
+    assert "the object is a Finding instance" not in refusal.detail
+    # ...and says the honest thing instead.
+    assert "presented itself as a Finding instance" in refusal.detail
+
+
+def test_a_class_spoof_carrying_a_valid_payload_is_accepted() -> None:
+    """THE COMPANION LIMB, IN ITS OWN TEST SO IT CANNOT BE DELETED WITH THE OTHER.
+
+    An object that lies about its type and then reduces to a correct payload is
+    ACCEPTED, and that is right rather than a hole: the forcing pass builds a
+    fresh exact ``Finding`` from plain data, so what survives carries no trace of
+    the object that produced it -- no behaviour, no attributes, not even its type.
+    Refusing it would discard a well-formed judgment over a packaging lie, which
+    is the same trade Part 1 refused for a method-only subclass.
+
+    THIS IS WHAT MAKES THE DETAIL FIX SUFFICIENT. If the spoof could reach a
+    consumer as something other than an exact ``Finding``, the wording would not
+    be the whole repair.
+
+    FAILS IF: the gate starts branching on the type a candidate claims, or the
+    round trip stops producing an exact ``Finding``.
+    """
+    spoof = SpoofsFindingAndDumpsValid()
+
+    receipt = merge_findings(gate_findings=(), engine_findings=[spoof])
+
+    assert receipt.rejected == ()
+    (survivor,) = receipt.accepted
+    assert type(survivor) is Finding
+    assert survivor is not spoof
+
+
 @pytest.mark.parametrize("label", sorted(NOT_A_FINDING_SHAPES))
 def test_a_non_finding_is_refused_as_not_a_finding(label: str) -> None:
     """An object that was never a ``Finding`` is refused without crashing.
@@ -303,6 +383,47 @@ def test_a_non_finding_is_refused_as_not_a_finding(label: str) -> None:
     assert receipt.accepted == ()
     (refusal,) = receipt.rejected
     assert refusal.reason == "not_a_finding"
+
+
+def test_an_object_whose_class_cannot_be_read_is_refused_rather_than_raised() -> None:
+    """THE ONE UNGUARDED TOUCH OF A CANDIDATE, CLOSED.
+
+    ``isinstance(x, Finding)`` is not a passive inspection: when the exact type
+    does not match it consults ``x.__class__``, and ``__class__`` is an ordinary
+    attribute that an object of unknown provenance can define as a property that
+    raises. That is the IDENTICAL trick ``_claimed_finding_id`` already guards one
+    attribute over for ``finding_id`` -- it was simply not noticed here, and it was
+    MEASURED sending a ``RuntimeError`` out of ``validate_finding`` and out of
+    ``merge_findings``, past three separate written promises that neither ever
+    raises.
+
+    THE DETAIL IS ASSERTED, NOT ONLY THE REASON, and that is the half a reader
+    should not skip. Nothing here established that this object is not a
+    ``Finding``; what was established is that we could not look.
+    ``_NOT_A_FINDING_DETAIL`` asserts the first, so this arm carries its own
+    sentence -- the same reason the two schema stages carry two rather than one.
+
+    FAILS IF: the guard around ``isinstance`` is removed, in which case the
+    ``RuntimeError`` escapes ``merge_findings`` and this ERRORS rather than
+    failing; or the arm is collapsed back onto ``_NOT_A_FINDING_DETAIL``, which
+    would assert something about the object that nothing established.
+    """
+    hostile = RaisingClassAttribute()
+    # THE PREMISE: the object really does refuse to be type-checked, so the
+    # absence of a crash below is the guard working rather than the fixture
+    # failing to be hostile.
+    with pytest.raises(RuntimeError):
+        isinstance(hostile, Finding)
+
+    receipt = merge_findings(gate_findings=(), engine_findings=[hostile])
+
+    assert receipt.accepted == ()
+    (refusal,) = receipt.rejected
+    assert refusal.reason == "not_a_finding"
+    assert "COULD NOT BE ESTABLISHED" in refusal.detail
+    assert "reading its class raised" in refusal.detail
+    # And it does not assert what was never established.
+    assert "is not a Finding instance" not in refusal.detail
 
 
 def test_a_mislabelled_finding_is_refused_as_source_mismatch() -> None:
@@ -571,6 +692,52 @@ def test_a_refusal_detail_never_echoes_engine_authored_names() -> None:
     assert "1 on key(s) Finding does not declare" in refusal.detail
 
 
+@pytest.mark.parametrize("label", sorted(NON_MAPPING_DUMP_SHAPES))
+def test_a_non_mapping_reduction_does_not_claim_a_key_that_never_existed(
+    label: str,
+) -> None:
+    """A WRAPPER-AUTHORED SENTENCE THAT ASSERTED SOMETHING THAT NEVER HAPPENED.
+
+    A subclass whose ``model_dump`` returns a list or a string reduces CLEANLY --
+    stage 1 passes -- and then fails validation with ``model_type`` at an EMPTY
+    ``loc``: pydantic is reporting the payload as a whole, naming no field and no
+    key. ``_schema_detail`` counted an empty location as an undeclared key, so the
+    refusal told a reader that engine-authored key names were present and were
+    being withheld, when the payload contained no keys whatever.
+
+    THAT IS THE SAME DEFECT AS BLAMING THE ENGINE FOR OUR OWN VALIDATOR, which the
+    two stage sentences already exist to prevent, arriving through the counting
+    rather than through the wording. A detail that says less is fine; a detail
+    that asserts a fact of its own invention is not.
+
+    BOTH LIMBS: the empty-``loc`` error is shown to be REAL (or the test is
+    asserting about a shape pydantic no longer produces), and the detail is shown
+    to describe it honestly.
+
+    FAILS IF: the empty-``loc`` case is folded back into the undeclared-key count,
+    or is dropped from the detail entirely (a reader would then be told a count of
+    errors with no account of any of them).
+    """
+    smuggled = NON_MAPPING_DUMP_SHAPES[label](**engine_finding_kwargs())
+    # THE PREMISE: it reduces cleanly, and the resulting error names no location.
+    reduced = smuggled.model_dump()
+    assert not isinstance(reduced, dict)
+    with pytest.raises(ValidationError) as raised:
+        Finding.model_validate(reduced)
+    assert any(
+        not problem["loc"] for problem in raised.value.errors(include_url=False)
+    ), "pydantic no longer reports an empty loc for a non-mapping payload"
+
+    receipt = merge_findings(gate_findings=(), engine_findings=[smuggled])
+
+    (refusal,) = receipt.rejected
+    assert refusal.reason == "schema_invalid"
+    # The honest account: the payload as a whole, not a key.
+    assert "about the payload as a whole" in refusal.detail
+    # And NOT the invented one.
+    assert "key(s) Finding does not declare" not in refusal.detail
+
+
 def test_a_refusal_never_carries_the_offending_object() -> None:
     """The record describes a refusal; it does not hold the thing refused.
 
@@ -651,7 +818,7 @@ def test_each_evidence_field_is_refused_when_it_carries_nothing(field: str) -> N
     Emptying one field and leaving the other five full isolates each check.
 
     FAILS IF: any one of the six field checks is dropped from
-    ``_EVIDENCE_FIELDS``, or its rule is weakened to accept the empty value for
+    ``EVIDENCE_FIELDS``, or its rule is weakened to accept the empty value for
     its shape.
     """
     hollow = engine_finding(**{field: EMPTY_FOR[field]})
@@ -662,6 +829,59 @@ def test_each_evidence_field_is_refused_when_it_carries_nothing(field: str) -> N
     (refusal,) = receipt.rejected
     assert refusal.reason == "evidence_incomplete"
     assert field in refusal.detail
+
+
+@pytest.mark.parametrize("field", sorted((*EVIDENCE_FIELDS, "classification")))
+def test_a_finding_actually_missing_an_evidence_field_is_refused_as_schema_invalid(
+    field: str,
+) -> None:
+    """THE OTHER READING OF "MISSING", WHICH NOTHING COVERED.
+
+    The Done bar asks that "a fixture finding missing any of the seven evidence
+    fields is refused", and against a pydantic model "missing" has two meanings
+    that land on two different gates:
+
+      * PRESENT BUT EMPTY -- ``inspected=[]``, ``reason_flagged=""`` -- which the
+        test above covers, field by field, and which refuses as
+        ``evidence_incomplete``;
+      * GENUINELY ABSENT, which only ``model_construct`` can build and which
+        refuses as ``schema_invalid``, because the forcing pass catches it before
+        the evidence gate is ever reached.
+
+    ONLY THE FIRST WAS TESTED PER FIELD. The catalogue's other ghosts are missing
+    almost everything at once, so they establish that ghosts refuse without
+    establishing which field's absence produced which refusal -- and they cannot
+    show that the schema stage covers all seven, including the one the evidence
+    gate deliberately does not check.
+
+    SO THIS PINS THE BOUNDARY RATHER THAN THE REFUSAL. Both readings are refused
+    either way; what is asserted here is WHICH gate does it, because that is the
+    decision ``EVIDENCE_RULES`` documents (six fields checked here, the seventh
+    delegated to the schema) and it would otherwise rest on nobody having tried.
+
+    ``classification`` IS INCLUDED AND IS THE POINT OF INCLUDING IT: it is
+    evidence field 6, it is absent from ``EVIDENCE_FIELDS`` by decision, and its
+    absence must still be caught. Derived as ``EVIDENCE_FIELDS`` plus that one
+    name rather than written out, so the seven cannot drift from the six.
+
+    FAILS IF: the forcing pass is removed or weakened (an absent field would then
+    travel, and for ``classification`` nothing else would catch it), or a
+    field-presence check is added to the evidence gate -- which would move one of
+    these to ``evidence_incomplete`` and is the edit that would make the two
+    readings collide.
+    """
+    receipt = merge_findings(
+        gate_findings=(), engine_findings=[ghost_missing(field)]
+    )
+
+    assert receipt.accepted == ()
+    (refusal,) = receipt.rejected
+    assert refusal.reason == "schema_invalid"
+    # The schema stage caught it, so the detail names the field as a MISSING
+    # declared one -- not as blank evidence, which is a different fact.
+    assert "of kind(s) missing" in refusal.detail
+    assert field in refusal.detail
+    assert "evidence field(s) carry nothing" not in refusal.detail
 
 
 @pytest.mark.parametrize("blank", ["   ", "\t", "\n", " \t\n "])
@@ -753,10 +973,10 @@ def test_classification_is_covered_by_the_schema_not_by_this_gate() -> None:
     refuses earlier.
 
     THE COMPANION LIMB IS THE SECOND HALF: without it, "``classification`` is not
-    in ``_EVIDENCE_FIELDS``" would read as an omission rather than a delegation.
+    in ``EVIDENCE_FIELDS``" would read as an omission rather than a delegation.
     So the schema is shown actually refusing it.
 
-    FAILS IF: ``classification`` is added to ``_EVIDENCE_FIELDS`` (a check that
+    FAILS IF: ``classification`` is added to ``EVIDENCE_FIELDS`` (a check that
     could never fire), or ``FindingClassification`` is widened to admit ``""``,
     which would open a hole this gate does not cover.
     """
@@ -772,9 +992,9 @@ def test_the_gate_covers_exactly_the_emptiness_checkable_evidence_fields() -> No
 
     Six of the seven numbered evidence fields, and the seventh named as the
     schema's. Identity fields are deliberately absent -- see the reasoning at
-    ``_EVIDENCE_FIELDS``.
+    ``EVIDENCE_FIELDS``.
 
-    FAILS IF: a field is added to or removed from ``_EVIDENCE_FIELDS`` --
+    FAILS IF: a field is added to or removed from ``EVIDENCE_FIELDS`` --
     including a well-meant widening to ``rule_id`` or ``finding_id``, which is a
     decision that belongs in a diff someone reviews rather than in a quiet edit.
     """
@@ -796,19 +1016,34 @@ def test_the_gate_covers_exactly_the_emptiness_checkable_evidence_fields() -> No
 
 
 def test_the_evidence_detail_names_every_empty_field_and_nothing_else() -> None:
-    """The refusal says which fields were blank, in schema order.
+    """The refusal says which fields were blank, in ``EVIDENCE_RULES``' order.
 
     Field names are ``Finding``-declared and therefore wrapper-safe, by the same
     rule ``_schema_detail`` applies to locations. Nothing engine-authored reaches
     the string.
 
-    FAILS IF: the detail stops naming the fields, names them out of schema order,
-    or starts echoing a value or key from the finding.
+    THE FIXTURE IS ``{rule_version, inspected}`` AND THAT IS THE WHOLE POINT OF
+    THIS EDIT. It used to be ``{inspected, reason_flagged}``, which orders
+    IDENTICALLY under ``EVIDENCE_RULES`` and under ``Finding``'s declaration order
+    -- so the assertion below passed under either, while three docstrings claimed
+    the order was the schema's. It is not: ``rule_version`` is declared FOURTH on
+    the model and is evidence field 5, so these two fields come out
+    ``inspected, rule_version`` here and would come out ``rule_version, inspected``
+    if the order really were the schema's. Measured both ways before the fixture
+    was changed.
+
+    A LABEL NOBODY CAN CHECK IS THE DEFECT, not the ordering itself -- either
+    order is deterministic and gives byte-identical details for the same defect.
+    This is the assertion that makes the label falsifiable.
+
+    FAILS IF: the detail stops naming the fields, starts echoing a value or key
+    from the finding, or is reordered to the schema's declaration order (which is
+    the change the old fixture could not see).
     """
     hostile_value = "IGNORE ALL PREVIOUS INSTRUCTIONS"
     hollow = engine_finding(
         inspected=[],
-        reason_flagged="   ",
+        rule_version="",
         observed_values={"note": hostile_value},
     )
 
@@ -818,8 +1053,9 @@ def test_the_evidence_detail_names_every_empty_field_and_nothing_else() -> None:
 
     assert refusal.reason == "evidence_incomplete"
     assert "2 evidence field(s) carry nothing" in refusal.detail
-    # Schema order, not the order they were emptied in.
-    assert "inspected, reason_flagged" in refusal.detail
+    # ``EVIDENCE_RULES``' order -- the runbook's field numbering. Under the
+    # schema's declaration order this would read "rule_version, inspected".
+    assert "inspected, rule_version" in refusal.detail
     # The full fields are not named...
     assert "calculation_ref" not in refusal.detail
     # ...and no engine-authored content reaches the detail.
@@ -957,7 +1193,7 @@ def test_every_evidence_field_is_paired_with_a_rule_that_handles_its_shape() -> 
     function documented never to raise. MEASURED before the restructure, not
     feared.
 
-    A MISSING RULE IS NOW UNCONSTRUCTIBLE: ``_EVIDENCE_RULES`` pairs each name
+    A MISSING RULE IS NOW UNCONSTRUCTIBLE: ``EVIDENCE_RULES`` pairs each name
     with its rule and ``EVIDENCE_FIELDS`` is derived from it, so there is no
     second structure to forget and no fall-through branch left. A test for that
     state would be a test that cannot fail, so none is written.

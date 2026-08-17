@@ -44,6 +44,8 @@ from findings_helpers import (
     accepted_gate_findings,
     engine_finding,
     engine_finding_kwargs,
+    free_text_field_names,
+    free_text_values,
 )
 
 from hfss_agent.adapter.fake import FakeAdapter, Scenario
@@ -148,16 +150,25 @@ def test_an_instruction_shaped_name_traced_through_every_hop() -> None:
 
       hop 1 ADAPTER   -- control characters stripped, words and U+202E intact
       hop 2 SNAPSHOT  -- carried; the project PATH dropped
-      hop 3 GATES     -- reaches ``provenance`` only, no top-level field
+      hop 3 GATES     -- reaches ``provenance`` only; none of the ELEVEN
+                         free-text fields on the finding carries it
       hop 4 MERGE     -- accepted, no anomaly, exact ``Finding``
       hop 5 RENDER    -- never reaches the paragraph, because provenance is not
-                         among the four rendered fields
+                         among the six rendered fields
+
+    HOP 3 COVERS ELEVEN FIELDS, NOT TEN. It walked ``Finding.model_fields``
+    filtering on ``isinstance(value, str)``, which drops ``inspected`` -- a
+    ``list[str]`` whose elements are producer prose just as much, and the field
+    ``test_the_free_text_surface_on_a_finding_is_eleven_fields_not_ten`` exists to
+    add to the count. Iterating ``free_text_field_names()`` makes the eleven
+    structural instead of whatever a type filter happens to admit.
 
     FAILS IF: any hop changes what it does with an untrusted name -- the adapter
     stops stripping, the assembler stops dropping the path, a gate starts
-    interpolating a selection name into a rendered field, or the renderer starts
-    rendering provenance. The last is the one to watch: it would put this name
-    into the paragraph without any other test noticing.
+    interpolating a selection name into a rendered field (or into ``inspected``,
+    which until now this hop could not see), or the renderer starts rendering
+    provenance. The last is the one to watch: it would put this name into the
+    paragraph without any other test noticing.
     """
     name = f"{ESC}[31m{INSTR}{BEL}{NUL}{RTL_OVERRIDE}EVITCEFED{POP_DIRECTIONAL}"
     chain, snapshot = _hostile_pipeline(name)
@@ -174,12 +185,13 @@ def test_an_instruction_shaped_name_traced_through_every_hop() -> None:
 
     # HOP 3 -- the gates put it on provenance and nowhere else.
     findings = evaluate_gates(snapshot, 2.4e9)
+    covered = free_text_field_names()
+    assert len(covered) == 11, f"the free-text surface moved: {sorted(covered)}"
     for finding in findings:
         assert INSTR in finding.provenance.project
-        for field in Finding.model_fields:
-            value = getattr(finding, field)
-            if isinstance(value, str):
-                assert INSTR not in value, f"{finding.rule_id}.{field}"
+        for field in covered:
+            for text in free_text_values(finding, field):
+                assert INSTR not in text, f"{finding.rule_id}.{field}"
 
     # HOP 4 -- the merge accepts it and records no anomaly.
     receipt = merge_findings(gate_findings=findings, engine_findings=())

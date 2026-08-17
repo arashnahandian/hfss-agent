@@ -395,6 +395,91 @@ class RaisingAccessor:
         raise RuntimeError("an engine object refused to be inspected")
 
 
+class RaisingClassAttribute:
+    """An object whose CLASS cannot be read -- the sibling of ``RaisingAccessor``,
+    one attribute over, and the one that was missed.
+
+    ``__class__`` is an ordinary attribute, and ``isinstance(x, Finding)``
+    consults it when the exact type does not match. So the identical trick that
+    made a raising ``finding_id`` propagate through ``getattr`` makes a raising
+    ``__class__`` propagate through ``isinstance`` -- measured escaping
+    ``validate_finding`` and ``merge_findings`` before either was guarded, past a
+    docstring promising neither ever raises.
+
+    Deliberately placed BESIDE ``RaisingAccessor`` rather than in a new section:
+    the two are one shape (an attribute an object of unknown provenance defines
+    as a raising property) reached through two different builtins, and a reader
+    who understands one should meet the other immediately.
+    """
+
+    @property
+    def __class__(self):  # type: ignore[override]
+        raise RuntimeError("an engine object refused to report its class")
+
+
+class SpoofsFinding:
+    """``__class__`` RETURNS ``Finding``: passes ``isinstance`` while being
+    nothing of the kind, and carries no ``model_dump`` at all.
+
+    THE OTHER HALF OF THE SAME FACT AS ``RaisingClassAttribute``. That one shows
+    ``__class__`` can RAISE; this one shows it can LIE -- it is an ordinary
+    assignable attribute, and ``isinstance`` reads it. Passing the type check is
+    therefore not proof of type, which is why both stage sentences say the object
+    "presented itself as" a Finding rather than that it is one.
+
+    Reaches STAGE 1: attribute lookup for ``model_dump`` does not go through
+    ``__class__``, so it raises ``AttributeError`` and the reduction fails.
+    """
+
+    @property
+    def __class__(self):  # type: ignore[override]
+        return Finding
+
+
+class SpoofsFindingAndDumpsHostile:
+    """A spoof that REDUCES, so it reaches stage 2 rather than stage 1.
+
+    MEASURED AS A SECOND ARM, not assumed to be the same one. A first reading of
+    this defect found only the stage-1 sentence; this shape shows
+    ``_UNVALIDATABLE_DETAIL`` carried the identical false claim, and it is why the
+    repair touched two constants instead of one.
+    """
+
+    @property
+    def __class__(self):  # type: ignore[override]
+        return Finding
+
+    def model_dump(self, **kwargs: object) -> Mapping:
+        return _HostileMapping()
+
+
+class SpoofsFindingAndDumpsValid:
+    """A spoof whose reduction is a VALID payload -- and which is ACCEPTED.
+
+    THE COMPANION THAT KEEPS THE FIX HONEST. The repair is to two sentences, not
+    to the gate, and this is why: what establishes validity is stage 2's fresh
+    ``model_validate``, which no ``__class__`` can spoof. An object that lies
+    about its type and then produces a correct payload yields an exact
+    ``Finding`` -- the type it claimed never mattered, the data it produced did.
+    A test asserting "spoofs are refused" would be asserting something false.
+    """
+
+    @property
+    def __class__(self):  # type: ignore[override]
+        return Finding
+
+    def model_dump(self, **kwargs: object) -> dict[str, object]:
+        return Finding(**engine_finding_kwargs()).model_dump()  # type: ignore[arg-type]
+
+
+# The two spoof shapes that are REFUSED, keyed by the stage each one reaches.
+# Both must be refused with a detail that does not assert what was never checked.
+CLASS_SPOOF_SHAPES: dict[str, object] = {
+    "spoof reaching stage 1 (no model_dump)": SpoofsFinding(),
+    "spoof reaching stage 2 (model_dump raises)": SpoofsFindingAndDumpsHostile(),
+}
+
+
 class _HostileMapping(Mapping):
     """A mapping that reduces fine as an object and explodes when READ.
 
@@ -436,6 +521,38 @@ class RaisesWhileDumping(Finding):
         raise RuntimeError("an engine override raised while reducing")
 
 
+class DumpsAList(Finding):
+    """``model_dump()`` returns a LIST: it reduces cleanly to something that is
+    not a mapping at all.
+
+    The shape that produces a validation error whose ``loc`` is EMPTY -- pydantic
+    reports ``model_type`` about the payload as a whole, naming no field and no
+    key. It is the arm on which counting empty locations as "undeclared keys"
+    made ``_schema_detail`` assert that engine-authored key names were present
+    when the payload contained no keys whatever.
+    """
+
+    def model_dump(self, **kwargs: object) -> list[object]:  # type: ignore[override]
+        return ["not", "a", "mapping"]
+
+
+class DumpsAString(Finding):
+    """``model_dump()`` returns a STRING: the same empty-``loc`` arm, reached by
+    a different reduction, so the fix is shown to be about the location and not
+    about one container type."""
+
+    def model_dump(self, **kwargs: object) -> str:  # type: ignore[override]
+        return "not a mapping at all"
+
+
+# The two reductions that are not mappings, keyed by what they return. Both land
+# on ``schema_invalid`` with at least one empty-``loc`` problem.
+NON_MAPPING_DUMP_SHAPES: dict[str, type[Finding]] = {
+    "model_dump returns a list": DumpsAList,
+    "model_dump returns a string": DumpsAString,
+}
+
+
 def ghost(**fields: object) -> Finding:
     """A ``Finding`` built by ``model_construct``: validation bypassed entirely.
 
@@ -447,6 +564,68 @@ def ghost(**fields: object) -> Finding:
     return Finding.model_construct(**fields)
 
 
+def ghost_missing(field: str) -> Finding:
+    """A ghost missing EXACTLY ONE field, with the other sixteen present and
+    correct.
+
+    THE DONE BAR'S OWN WORDING NEEDED THIS AND NOTHING HAD IT. "A fixture finding
+    missing any of the seven evidence fields" has two readings against a pydantic
+    model -- present-but-empty, and genuinely ABSENT -- and only the first was
+    covered. The catalogue's other ghosts are missing almost everything, so they
+    cannot show which field's absence produced which refusal.
+
+    Built from ``engine_finding_kwargs`` so the sixteen survivors are the same
+    values the accepted-path fixture uses: whatever refusal comes back is
+    attributable to the one removed field and to nothing else.
+    """
+    return Finding.model_construct(
+        **{name: value for name, value in engine_finding_kwargs().items()
+           if name != field}
+    )
+
+
+def free_text_field_names() -> set[str]:
+    """The free-text fields on ``Finding``, DERIVED FROM THE MODEL.
+
+    ONE DERIVATION, SHARED, because three tests need this set and three copies of
+    a rule is how the count drifted in the first place. A field is free text when
+    its declared type admits arbitrary producer prose: a bare ``str``, the
+    optional ``str | None``, or a ``list[str]`` whose elements are prose just as
+    much. The three ``str``-shaped fields that are closed ``Literal``s --
+    ``source``, ``outcome``, ``classification`` -- are excluded, because the
+    schema refuses anything but their members at construction and counting them
+    would overstate the untrusted surface.
+
+    ``inspected`` IS THE ONE THIS EXISTS FOR. It is the eleventh member, it is a
+    ``list[str]``, and the two pipeline tests that swept "every str field" missed
+    it for exactly that reason -- an ``isinstance(value, str)`` filter skips a
+    list. Iterating this set instead makes the coverage structural.
+    """
+    names: set[str] = set()
+    for name, spec in Finding.model_fields.items():
+        annotation = str(spec.annotation)
+        if "Literal" in annotation:
+            continue
+        if spec.annotation is str or annotation in ("str | None", "list[str]"):
+            names.add(name)
+    return names
+
+
+def free_text_values(finding: Finding, name: str) -> list[str]:
+    """Every producer-authored string carried by one free-text field.
+
+    A ``list[str]`` yields its elements and a ``str | None`` holding ``None``
+    yields nothing, so a caller can iterate uniformly without re-deciding the
+    shape at each site -- which is the decision the two sweeps got wrong.
+    """
+    value = getattr(finding, name)
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
 # The nine non-Finding / malformed inputs, keyed by the Probe 4 label they came
 # from, so a failure names the measured shape rather than a fixture number.
 NOT_A_FINDING_SHAPES: dict[str, object] = {
@@ -456,6 +635,7 @@ NOT_A_FINDING_SHAPES: dict[str, object] = {
     "None": None,
     "a foreign object": ForeignFinding(),
     "an object whose accessor raises": RaisingAccessor(),
+    "an object whose class cannot be read": RaisingClassAttribute(),
     "an int": 12345,
 }
 

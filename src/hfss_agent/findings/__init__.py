@@ -20,9 +20,17 @@ and (d) never allowed to influence control flow.
       ``assemble_snapshot`` -> ``evaluate_gates``) reaches a gate finding with
       ESC, BEL and NUL already removed and its instruction text intact, and an
       over-length setup name arrives capped and marked. On a gate finding the
-      ONLY fields carrying HFSS text are the five selection names on
-      ``provenance``; none of the eleven free-text fields on ``Finding`` itself
-      carries any. THIS PACKAGE ADDS NO CAPPING AND NO STRIPPING, on either
+      only fields carrying HFSS text are SIX, all on ``provenance``: the five
+      selection names, PLUS ``provenance.variation.values``, whose keys and
+      values are the design's own variable names and settings and are read from
+      HFSS exactly as the five are (``adapter/real/real_adapter.py`` builds them;
+      ``sanitize_result`` recurses into nested models, so they arrive stripped
+      and capped like everything else). The count said FIVE until the variation
+      was walked -- the conclusion is unchanged, but this paragraph's whole
+      weight is that it is a claim about SURFACE, and a surface enumeration that
+      misses a carrier is worth correcting even when the carrier is clean. None
+      of the eleven free-text fields on ``Finding`` itself carries any. THIS
+      PACKAGE ADDS NO CAPPING AND NO STRIPPING, on either
       stream. Not as an exemption -- there is no branch on source anywhere in the
       accept-or-refuse path or in the renderer, so there is no source for which a
       requirement could be relaxed. It is that ``sanitize_str`` and
@@ -71,15 +79,35 @@ sixteen, marked ``# field 1`` .. ``# field 7`` at their declarations. There is n
 separate seven-field schema to validate against: validating against ``Finding``
 validates all sixteen, which is strictly stronger.
 
-WHERE A REJECTION IS SURFACED TO A USER -- a boundary worth stating, because both
-the runbook's Done bar and this module's own first paragraph describe rejected
-findings as "never displayed", which reads as though this module owned a display.
-It does not, and cannot: nothing in ``src/`` constructs a
-``tool_io.ValidationReport`` today, that type declares exactly ``native``,
-``findings``, ``engine_status`` and ``template_text`` under ``extra="forbid"``,
-and no contract type anywhere can carry a rejection or the reason for one. That
-response is Step 3.3's, and so is the decision about whether a refusal count
-reaches a user at all.
+WHERE A REJECTION IS SURFACED TO A USER -- a boundary worth stating, because the
+runbook's Done bar describes rejected findings as "not displayed", and the answer
+has two halves that sound like one.
+
+THIS PACKAGE DOES OWN A DISPLAY, SINCE PART 4. ``render.findings_template_text``
+is it, and it surfaces refusals rather than hiding them: a count on the first
+line, then one entry per refusal carrying the stream it arrived on, its position,
+its wrapper-authored reason and detail, and its claimed ``finding_id`` verbatim,
+under a heading saying they were NOT shown above. That is framed data and it is
+deliberate -- a refusal a reader cannot see is a refusal nobody acts on. WHAT IS
+NOT DISPLAYED IS THE REFUSED FINDING ITSELF: none of its own text reaches the
+paragraph, only the wrapper's account of why it did not travel.
+
+(THIS PARAGRAPH SAID THE OPPOSITE -- "It does not, and cannot" own a display --
+and went on to assign "whether a refusal count reaches a user at all" to Step
+3.3. Part 4 landed the renderer eighty lines below the claim, in this same file,
+and neither sentence was revisited. It also cited "this module's own first
+paragraph" for the words "never displayed", which that paragraph does not contain
+and may never have. Recorded rather than silently corrected, because a docstring
+that was confidently wrong about its own module is the thing this package's
+review convention exists to catch.)
+
+WHAT THIS PACKAGE DOES NOT OWN IS THE TOOL RESPONSE. Nothing in ``src/``
+constructs a ``tool_io.ValidationReport`` today; that type declares exactly
+``native``, ``findings``, ``engine_status`` and ``template_text`` under
+``extra="forbid"``, and no contract type anywhere can carry a rejection or the
+reason for one. So Step 3.3 decides whether this paragraph is composed into a
+response at all -- and if it is, the refusal count and the refusal list travel
+with it, because they are part of the paragraph and not a separate switch.
 
 So the refusals live here as ``FindingReceipt.rejected``: a local frozen
 dataclass, complete, machine-readable, and Step 3.3's to compose with. It is here

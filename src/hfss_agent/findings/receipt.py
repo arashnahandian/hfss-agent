@@ -95,6 +95,24 @@ _NOT_A_FINDING_DETAIL = (
     "wrapper-authored field."
 )
 
+# THE SECOND ``not_a_finding`` SENTENCE, AND IT EXISTS FOR THE REASON THE TWO
+# SCHEMA SENTENCES BELOW DO: one sentence covering both cases would be false in
+# one of them. The sentence above ASSERTS the object is not a ``Finding``. This
+# one is for the case where that could not be established at all, because reading
+# the object's class raised -- and saying "is not a Finding instance" about an
+# object we were unable to look at would be a claim this package did not earn.
+# Same reason is reported (no schema check was reachable, nothing was examined);
+# only the account of WHY differs, exactly as the two schema stages differ.
+_UNREADABLE_CLASS_DETAIL = (
+    "whether the object supplied is a Finding instance COULD NOT BE ESTABLISHED: "
+    "reading its class raised. isinstance consults __class__, which is an "
+    "ordinary attribute an object of unknown provenance may define as a property "
+    "that raises, so the failure arose on the supplied object's own code path. No "
+    "schema check was reachable and nothing about its content was examined. The "
+    "underlying error is deliberately not echoed here: its text is not "
+    "wrapper-authored."
+)
+
 # TWO STAGES, TWO SENTENCES, BECAUSE ONE SENTENCE COULD BE FALSE. These read as
 # near-duplicates and are not: the receipt gate reduces a candidate to plain data
 # and then validates that data, and a non-validation failure in EITHER stage ends
@@ -104,12 +122,30 @@ _NOT_A_FINDING_DETAIL = (
 # reduced to plain data" and blamed engine-supplied code for what may equally
 # have been one of this package's own validators. Stating which stage failed is
 # the only version of this that is true in both cases.
+#
+# BOTH SENTENCES SAY "PRESENTED ITSELF AS" RATHER THAN "IS", AND THAT IS A
+# CORRECTION RATHER THAN A HEDGE. Passing ``isinstance(x, Finding)`` is not proof
+# of type: ``__class__`` is an ordinary ASSIGNABLE attribute and ``isinstance``
+# reads it, so an object whose ``__class__`` RETURNS ``Finding`` passes that check
+# while being nothing of the kind. Both of these arms were then measured carrying
+# an affirmative false claim about it -- not one arm, which is what a first
+# reading found: a spoof with no ``model_dump`` reaches stage 1, and a spoof that
+# reduces reaches stage 2, and the earlier wording of each asserted "the object IS
+# a Finding instance". That is the same defect as ``_schema_detail`` counting an
+# empty location as an undeclared key: a wrapper-authored field stating something
+# the wrapper never established.
+#
+# NOTHING DOWNSTREAM RESTS ON THE DISTINCTION, which is why the repair is to the
+# sentences and not to the gate. What establishes validity is stage 2's fresh
+# ``model_validate``, and no ``__class__`` can spoof that -- measured, a spoof
+# whose ``model_dump`` returns a VALID payload is ACCEPTED, correctly, as an exact
+# ``Finding``. The type it claimed never mattered; the data it produced did.
 _UNDUMPABLE_DETAIL = (
-    "the object is a Finding instance but raised while being REDUCED to plain "
-    "data, so its contents were never checked. ``model_dump`` is an ordinary "
-    "method and a subclass may override it, so the failure arose on the supplied "
-    "object's own code path. The underlying error is deliberately not echoed "
-    "here: its text is not wrapper-authored."
+    "the object presented itself as a Finding instance but raised while being "
+    "REDUCED to plain data, so its contents were never checked. ``model_dump`` is "
+    "an ordinary method and a subclass may override it, so the failure arose on "
+    "the supplied object's own code path. The underlying error is deliberately "
+    "not echoed here: its text is not wrapper-authored."
 )
 
 # --- the inert-value gate ----------------------------------------------------
@@ -488,8 +524,20 @@ def _some_entry_is_present(value: Iterable[str]) -> bool:
     return any(entry.strip() for entry in value)
 
 
-# EACH FIELD PAIRED WITH ITS RULE, IN ``Finding``'s OWN DECLARATION ORDER. The
-# pairing is the structure, and it replaces a name -> shape lookup that had the
+# EACH FIELD PAIRED WITH ITS RULE, IN THE RUNBOOK'S EVIDENCE-FIELD NUMBERING --
+# fields 1..7, marked at each row below.
+#
+# NOT ``Finding``'s DECLARATION ORDER, WHICH IS WHAT THIS LINE CLAIMED UNTIL IT
+# WAS MEASURED. The two differ: ``rule_version`` is declared FOURTH on the model
+# and sits FIFTH here, because it is evidence field 5. Both orders are
+# deterministic, so nothing about the OUTPUT was wrong -- what was wrong was the
+# label on it, which is precisely the failure ``metrics/assembler.py`` renamed a
+# constant over (``_ONLY_PASS_PERMITS_NOTICE`` -> ``_REFUSAL_POLICY_NOTICE``, "a
+# true sentence under a false label"), arriving here as a comment instead of a
+# name. The numbering is the right order to use -- it is the order the Done bar
+# and ``__init__`` both count the seven in -- so the fix was the label.
+#
+# The pairing is the structure, and it replaces a name -> shape lookup that had the
 # exact rot hole such a lookup is built to close: a field added to the field list
 # but forgotten in the shape sets FELL THROUGH to the string rule, and
 # ``list.strip()`` then raised ``AttributeError`` out of the evidence stage --
@@ -534,9 +582,10 @@ EVIDENCE_RULES: tuple[tuple[str, Callable[[Any], bool]], ...] = (
 EVIDENCE_FIELDS: tuple[str, ...] = tuple(name for name, _ in EVIDENCE_RULES)
 
 _UNVALIDATABLE_DETAIL = (
-    "the object is a Finding instance and reduced to plain data, but RE-VALIDATING "
-    "that data raised something other than a validation error, so its validity "
-    "could not be established. WHERE THAT FAILURE ORIGINATED IS NOT KNOWABLE HERE "
+    "the object presented itself as a Finding instance and reduced to plain data, "
+    "but RE-VALIDATING that data raised something other than a validation error, "
+    "so its validity could not be established. WHERE THAT FAILURE ORIGINATED IS "
+    "NOT KNOWABLE HERE "
     "and is deliberately not attributed: a Finding subclass may return any object "
     "at all from model_dump, so the fault may lie in the reduced payload or in "
     "this package's own validators. The underlying error is deliberately not "
@@ -561,7 +610,29 @@ def validate_finding(
 
     Returns:
         An EXACT ``Finding`` (``type(x) is Finding``) on success, or a
-        ``RejectedFinding`` naming why. Never raises for any input shape.
+        ``RejectedFinding`` naming why.
+
+    NEVER RAISES FOR ANY INPUT SHAPE -- AND WHAT MAKES THAT TRUE IS WRITTEN AT
+    EACH PLACE A CANDIDATE IS TOUCHED, NOT RESTATED HERE. An earlier version of
+    this line was a restatement and nothing more, and one unguarded call
+    falsified it, ``merge_findings``' copy of it, and the module docstring's
+    "nothing is read off one by bare attribute access" -- three written
+    guarantees, one line, measured rather than argued. A restated claim is what
+    let that happen, so the claim now points at its own evidence:
+
+      * ``_claimed_finding_id`` guards its own read (a raising accessor);
+      * the ``isinstance`` below is GUARDED, because ``__class__`` is an
+        attribute and an attribute can raise -- see the comment at that line;
+      * stage 1 guards ``model_dump``, which a subclass may override;
+      * stage 2 guards ``model_validate`` twice, for ``ValidationError`` and for
+        anything else.
+
+    STAGES 3 AND 4 ARE UNGUARDED BY DESIGN AND EARN IT rather than being trusted:
+    the inert walk executes nothing belonging to the objects it inspects and
+    terminates on every input (its docstring establishes each), and the evidence
+    rules run only on types stage 2 has already forced. A FIFTH TOUCH ADDED LATER
+    NEEDS ITS OWN ANSWER IN THIS LIST, and "it looks like it cannot raise" is not
+    one unless something makes it so.
 
     PRECEDENCE IS A DECISION, NOT AN ARTEFACT OF STATEMENT ORDER, and it is
     written here because until it was, it was the latter. A finding can carry more
@@ -667,7 +738,41 @@ def validate_finding(
     """
     claimed = _claimed_finding_id(candidate)
 
-    if not isinstance(candidate, Finding):
+    # THE TYPE CHECK IS GUARDED, AND THIS WAS THE ONE UNGUARDED TOUCH OF THE
+    # CANDIDATE IN THE WHOLE FUNCTION. ``isinstance(x, Finding)`` is not a
+    # passive inspection: when the exact type does not match it consults
+    # ``x.__class__``, and ``__class__`` is an ordinary attribute that an object
+    # of unknown provenance can define as a property that raises. That is the
+    # IDENTICAL trick ``_claimed_finding_id`` already measured and guards one
+    # attribute over -- it was simply not noticed here, and a candidate whose
+    # ``__class__`` raised sent a ``RuntimeError`` straight out of this function
+    # and out of ``merge_findings``.
+    #
+    # WHAT THIS GUARD ESTABLISHES IS EXACTLY ONE THING: that the call returns
+    # instead of raising. IT DOES NOT ESTABLISH THAT A PASSING CANDIDATE IS A
+    # ``Finding``, and the difference is measured rather than theoretical:
+    # ``__class__`` is assignable, so an object whose ``__class__`` RETURNS
+    # ``Finding`` passes here while being nothing of the kind. Such an object is
+    # still refused -- it has no real ``model_dump``, so stage 1 catches it --
+    # and RECORDED, NOT FIXED HERE: ``_UNDUMPABLE_DETAIL`` then opens "the object
+    # is a Finding instance", which is false of that one shape. What actually
+    # establishes validity is stage 2's fresh ``model_validate``, which no
+    # ``__class__`` can spoof, so nothing downstream rests on this check.
+    try:
+        is_a_finding = isinstance(candidate, Finding)
+    except Exception:
+        # DELIBERATELY BROAD, NARROWLY SCOPED TO ONE CALL, and ``BaseException``
+        # is not caught -- stage 1's guard states that reasoning and this is the
+        # same bound. A KeyboardInterrupt is not a malformed finding.
+        return RejectedFinding(
+            arrived_on=arrived_on,
+            position=position,
+            reason="not_a_finding",
+            detail=_UNREADABLE_CLASS_DETAIL,
+            claimed_finding_id=claimed,
+        )
+
+    if not is_a_finding:
         return RejectedFinding(
             arrived_on=arrived_on,
             position=position,
@@ -775,11 +880,18 @@ def validate_finding(
 
 
 def _empty_evidence_fields(finding: Finding) -> list[str]:
-    """The evidence fields carrying nothing, in ``Finding``'s declaration order.
+    """The evidence fields carrying nothing, in ``EVIDENCE_RULES``' order.
 
     A LIST RATHER THAN A BOOL, so the refusal can name what was missing instead of
-    only that something was. Order is ``EVIDENCE_RULES``' -- the schema's own --
-    so two findings with the same defect produce byte-identical details.
+    only that something was. Order is ``EVIDENCE_RULES``' -- THE RUNBOOK'S
+    EVIDENCE-FIELD NUMBERING, NOT THE SCHEMA'S DECLARATION ORDER, and this
+    docstring said "the schema's own" until the two were measured against each
+    other: ``rule_version`` is declared before ``inspected`` on ``Finding`` and is
+    reported after it here. Either order gives byte-identical details for two
+    findings with the same defect, which is the property that actually matters;
+    what was wrong was the label, and a test fixture that emptied two fields
+    ordered identically under both could not tell them apart. See
+    ``EVIDENCE_RULES``.
 
     WHITESPACE IS EMPTY. ``"   "``, ``"\\t"`` and ``"\\n"`` are refused exactly as
     ``""`` is, and that is a decision rather than an accident of using ``strip``.
@@ -929,6 +1041,17 @@ def _schema_detail(error: ValidationError) -> str:
     the diagnostically load-bearing half; WHICH names they used is exactly the
     half that cannot be echoed. That trade is ``preflight/redaction.py``'s
     ``_dropped_argument_count`` made again, for the same reason.
+
+    AN EMPTY ``loc`` NAMES NOTHING AT ALL, AND IS REPORTED SEPARATELY RATHER THAN
+    COUNTED AS AN UNDECLARED KEY. It was counted as one until this was measured,
+    and that made the sentence above FALSE on a reachable arm: a subclass whose
+    ``model_dump`` returns a list or a string reduces cleanly and then fails
+    validation with ``model_type`` at ``loc == ()``, and the detail told a reader
+    that engine-authored key names were present when no key existed anywhere. A
+    wrapper-authored sentence asserting something that never happened is worse
+    than one that says less -- it is the same defect as blaming the engine for our
+    own validator, which the two stage sentences already exist to prevent. The
+    honest report for that arm names what actually failed: the payload as a whole.
     """
     problems = error.errors(include_url=False)
     declared = set(Finding.model_fields)
@@ -942,8 +1065,12 @@ def _schema_detail(error: ValidationError) -> str:
     undeclared = sum(
         1
         for problem in problems
-        if not problem["loc"] or str(problem["loc"][0]) not in declared
+        if problem["loc"] and str(problem["loc"][0]) not in declared
     )
+    # Errors about the payload itself rather than about any field within it.
+    # A DIFFERENT FACT FROM AN UNDECLARED KEY, not a degenerate case of one --
+    # see the docstring for the arm that made counting them together a lie.
+    whole_payload = sum(1 for problem in problems if not problem["loc"])
     kinds = sorted({str(problem["type"]) for problem in problems})
 
     parts = [f"{len(problems)} schema error(s) of kind(s) {', '.join(kinds)}"]
@@ -953,5 +1080,11 @@ def _schema_detail(error: ValidationError) -> str:
         parts.append(
             f"and {undeclared} on key(s) Finding does not declare, whose names "
             "are engine-authored and are deliberately not echoed"
+        )
+    if whole_payload:
+        parts.append(
+            f"and {whole_payload} about the payload as a whole rather than about "
+            "any field in it, which is what a reduction that is not a mapping "
+            "produces"
         )
     return "; ".join(parts) + "."

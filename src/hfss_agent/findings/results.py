@@ -197,12 +197,26 @@ class RejectedFinding:
     # such attribute, a dict without the key, an attribute holding a non-string,
     # and an object whose attribute access raised.
     #
-    # NOT YET ENVELOPED. Part 4 owns the untrusted-string envelope, and until it
-    # lands this field carries whatever was there, verbatim -- control characters
-    # and instruction-shaped text included.
-    # ``test_an_untrusted_finding_id_survives_verbatim_today`` asserts exactly
-    # that, so Part 4 has a failing-to-passing transition to land against rather
-    # than a comment to delete.
+    # NEVER ENVELOPED AT THIS FIELD, AND THAT IS PART 4'S CONCLUSION RATHER THAN
+    # A GAP IT LEFT. This comment used to predict the opposite -- "NOT YET
+    # ENVELOPED ... until [Part 4] lands" -- and Part 4 landed and decided the
+    # other way, twice over: W-10 CANNOT strip (``sanitize_str`` and
+    # ``MAX_UNTRUSTED_STR_LEN`` live in ``hfss_agent.adapter``, which Layer 6 may
+    # not import), and it MUST NOT strip even if it could, because this value is
+    # the only content-derived handle a caller has for correlating a refusal
+    # against the finding it handed in. Editing it would break exactly the
+    # correspondence it exists to provide -- ``merge._id_anomalies`` records that
+    # argument at length.
+    #
+    # SO THE VALUE STAYS VERBATIM: control characters and instruction-shaped text
+    # included. The neutralization §6.6 actually prescribes happens one layer out,
+    # at ``render._refusal_entry``, which quotes it as data, labels it CLAIMED
+    # rather than verified, and never places it in an instruction position. The
+    # two halves are pinned by
+    # ``test_claimed_finding_id_carries_untrusted_text_verbatim_by_design`` (this
+    # field keeps the raw characters) and
+    # ``test_the_rendered_refusal_frames_the_claimed_id_it_does_not_clean_it``
+    # (the framing is there).
     claimed_finding_id: str | None
 
 
