@@ -24,6 +24,17 @@ probed before it was written rather than assumed:
   * Wrong-typed fields, and a nested ghost provenance, both surface as ordinary
     validation errors.
 
+THEN A SECOND, INDEPENDENT GATE: EVIDENCE COMPLETENESS. The two are the pair the
+runbook names -- "malformed OR evidence-incomplete" -- and they have OPPOSITE
+FEASIBILITY, which is why they are two gates and not one. The forcing pass above
+catches objects whose SHAPE cannot be established. This one catches an object
+whose shape is perfect and whose CONTENT is absent: a ``Finding`` with
+``inspected=[]``, ``observed_values={}`` and ``reason_flagged=""`` validates
+cleanly against the schema -- measured -- because nothing in ``Finding`` carries
+a ``min_length`` or any other constraint. No schema check can ever reach it, so
+without this gate a judgment presented with no evidence at all would be handed on
+as an accepted finding.
+
 WHAT IT DOES NOT CATCH, so the claim stays the size of the mechanism: a
 ``Finding`` whose ``observed_values`` carries a callable, a ``pathlib.Path`` or a
 live handle validates CLEANLY through this pass and the object survives intact.
@@ -39,6 +50,9 @@ by bare attribute access, and no method of one is called outside a guard.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -74,6 +88,107 @@ _UNDUMPABLE_DETAIL = (
     "here: its text is not wrapper-authored."
 )
 
+# --- the evidence gate's field set ------------------------------------------
+#
+# THE SEVEN NUMBERED EVIDENCE FIELDS ARE SIX HERE, AND THE MISSING ONE IS NOT AN
+# OVERSIGHT. ``classification`` (field 6) is a closed ``Literal`` --
+# ``error``/``warning``/``judgment_call`` -- so an empty value is REFUSED BY THE
+# SCHEMA before this gate is ever reached. Measured rather than reasoned:
+# constructing a ``Finding`` with ``classification=""`` raises ``literal_error``.
+# A non-emptiness check on it could therefore never fire, and a check that cannot
+# fail is the shape this build has shipped three times and each time it read as
+# coverage. The Done bar's number is still satisfied: all seven are COVERED, six
+# by this gate and the seventh by the schema, which is a stronger guarantee than
+# a check of ours because it refuses at construction.
+#
+# THE OTHER FOUR FREE STRINGS -- ``finding_id``, ``rule_id``, ``rule_purpose``,
+# ``severity`` -- ARE CONSIDERED AND DELIBERATELY EXCLUDED. All four can hold ""
+# (measured), so the exclusion is a decision rather than an impossibility, and an
+# unlisted omission is indistinguishable from an unconsidered one (ADR-29 dec. 4):
+#
+#   * THEY ARE IDENTITY, NOT EVIDENCE, and this gate's whole claim is about
+#     evidence. A finding with an empty ``rule_id`` but full ``inspected``,
+#     ``observed_values``, ``reason_flagged`` and ``limitations_and_assumptions``
+#     still shows what was looked at, what was found, why it was flagged, and what
+#     the judgment assumes. It is not evidence-incomplete; it is
+#     identity-incomplete, which is a different defect.
+#   * TRACEABILITY IS ALREADY COVERED FROM INSIDE THE SEVEN. ``calculation_ref``
+#     (field 3) is the reference into the code that produced the finding and IS
+#     checked here, so "which code stands behind this" cannot be blank even when
+#     ``rule_id`` is.
+#   * IDENTITY BELONGS TO THE MERGE'S OWN PART, not this one. Part 3 owns
+#     ``finding_id`` collision across the two streams, and an empty ``finding_id``
+#     is the degenerate collision -- every one of them collides with every other.
+#     Checking emptiness here and collision there would split one field's rules
+#     across two parts, which is the drift this package refuses everywhere else.
+#   * ``severity`` IS A REMOVAL CANDIDATE. ``gating/common.py`` records it as a
+#     required field no producer ever varies and names it for removal at the next
+#     contract amendment on ADR-30 dec. 3's argument. Adding a gate over a field
+#     already proposed for deletion would create a second thing to unpick.
+#
+# SO THIS GATE DOES NOT WIDEN PAST THE SEVEN. Stated plainly because the opposite
+# choice was available and arguable, and because a reader who expects ``rule_id``
+# here should find the reason rather than a gap.
+def _text_is_present(value: str) -> bool:
+    """A free-text field carries something: it is not blank after stripping."""
+    return bool(value.strip())
+
+
+def _some_entry_is_present(value: Iterable[str]) -> bool:
+    """A container names something: some entry is not blank after stripping.
+
+    ITERATING A MAPPING YIELDS ITS KEYS, which is not an incidental convenience
+    -- it is the mechanism by which this gate never touches a VALUE. For
+    ``observed_values`` the entries walked here are the key strings and nothing
+    else, so the keys-not-values bound is a property of the iteration rather than
+    a rule someone has to remember to apply. See ``_empty_evidence_fields`` for
+    why touching a value would be unsafe rather than merely undesirable.
+    """
+    return any(entry.strip() for entry in value)
+
+
+# EACH FIELD PAIRED WITH ITS RULE, IN ``Finding``'s OWN DECLARATION ORDER. The
+# pairing is the structure, and it replaces a name -> shape lookup that had the
+# exact rot hole such a lookup is built to close: a field added to the field list
+# but forgotten in the shape sets FELL THROUGH to the string rule, and
+# ``list.strip()`` then raised ``AttributeError`` out of stage 3 -- which sits
+# outside both ``try`` blocks, from a function whose docstring promises it never
+# raises. MEASURED, not feared: the AttributeError propagated all the way out of
+# ``validate_finding``.
+#
+# A ROW CANNOT OMIT ITS RULE. That is the whole point of pairing rather than
+# maintaining two structures held together by a test: the bad state is now
+# UNCONSTRUCTIBLE instead of merely detectable, which is how this package handles
+# dangerous states everywhere else. There is no fall-through branch left to take,
+# and no default anybody has to have chosen.
+#
+# TWO RULES, NOT THREE, and the collapse is deliberate. ``inspected`` and
+# ``observed_values`` are judged by the identical expression because iterating a
+# list yields its elements and iterating a mapping yields its keys -- the same
+# question asked of the same kind of thing. Splitting them into two identically
+# bodied functions would be two homes for one fact.
+#
+# ONE UNIVERSAL RULE WOULD ALSO HAVE WORKED, AND IS DECLINED. Measured:
+# ``any(entry.strip() for entry in value)`` is correct for a ``str`` too, because
+# iterating a string yields its characters and a string is blank exactly when
+# every character is. That would collapse the table to a single expression with no
+# pairing at all -- and it would make the ``str`` case read as a character walk,
+# which is cleverness a reader has to stop and decode. The charter asks for
+# meaningful over clever; two named rules cost one line and read as what they are.
+EVIDENCE_RULES: tuple[tuple[str, Callable[[Any], bool]], ...] = (
+    ("inspected", _some_entry_is_present),  # field 1
+    ("observed_values", _some_entry_is_present),  # field 2
+    ("calculation_ref", _text_is_present),  # field 3
+    ("reason_flagged", _text_is_present),  # field 4
+    ("rule_version", _text_is_present),  # field 5
+    # field 6 is ``classification`` -- closed Literal, refused by the schema
+    ("limitations_and_assumptions", _text_is_present),  # field 7
+)
+
+# DERIVED, NEVER WRITTEN TWICE. A second hand-maintained tuple of names would be
+# the drift the pairing above exists to prevent, one structure further out.
+EVIDENCE_FIELDS: tuple[str, ...] = tuple(name for name, _ in EVIDENCE_RULES)
+
 _UNVALIDATABLE_DETAIL = (
     "the object is a Finding instance and reduced to plain data, but RE-VALIDATING "
     "that data raised something other than a validation error, so its validity "
@@ -104,13 +219,59 @@ def validate_finding(
         An EXACT ``Finding`` (``type(x) is Finding``) on success, or a
         ``RejectedFinding`` naming why. Never raises for any input shape.
 
-    NO ACCEPT-OR-REFUSE DECISION HERE READS A SOURCE VALUE. Neither
-    ``arrived_on`` nor any candidate's ``source`` attribute is compared, tested,
-    switched on, or used to select a code path: ``arrived_on`` is carried into
-    the refusal record as data and nothing else. That is what makes the gate
-    UNCONDITIONAL in the sense ADR-23 dec. 1 requires -- there is no source for
-    which the requirement is relaxed, because the code deciding accept-or-refuse
-    never branches on one. The one place a source value IS read is the caller's
+    PRECEDENCE IS A DECISION, NOT AN ARTEFACT OF STATEMENT ORDER, and it is
+    written here because until it was, it was the latter. A finding can carry more
+    than one defect at once, and exactly one refusal is emitted, so the order
+    below DECIDES WHICH DEFECT IS REPORTED. The order is:
+
+        not a Finding  ->  schema invalid  ->  evidence incomplete
+                       ->  source mismatch  (the caller's, in ``merge``)
+
+    THE FIRST THREE ARE SEQUENTIAL PRECONDITIONS rather than a ranking: an object
+    that is not a ``Finding`` cannot be schema-checked, and one whose schema
+    cannot be established cannot have its evidence read. There is no choice to
+    make between them; each is simply unreachable until the one before it passes.
+
+    THE REAL DECISION IS EVIDENCE BEFORE SOURCE, because those two are genuinely
+    simultaneous -- a finding can be both blank and mislabelled, and either check
+    could run first. INTRINSIC BEFORE RELATIONAL, and the argument is made here
+    rather than inherited from the stage ordering above, which rests on type
+    safety and would not settle this:
+
+      * AN EVIDENCE DEFECT IS A PROPERTY OF THE OBJECT; a source mismatch is a
+        property of the object's RELATIONSHIP to the stream that carried it. The
+        same blank finding is blank on either stream, while the same mislabelled
+        finding is perfectly fine on the other one. Reporting the invariant defect
+        first means the reason describes the finding rather than the transaction.
+      * IT IS THE MORE ACTIONABLE OF THE TWO for whoever must fix the producer.
+        "Your rule emitted no evidence" is fixed at the rule; "it arrived on the
+        wrong stream" is fixed at a call site that may not even be the engine's.
+      * IT KEEPS THE REASON STABLE ACROSS STREAMS, which is the same uniformity
+        the Done bar asks of the gate itself. The evidence check is total -- it
+        runs on every finding and needs nothing but the finding -- while the
+        source check needs the stream. Ordering total-before-conditional means a
+        blank finding reports ``evidence_incomplete`` no matter which stream it
+        arrived on, instead of reporting one reason on one stream and another on
+        the other.
+
+    ONE REFUSAL REPORTS THE FIRST FAILURE, NEVER THE COMPLETE LIST. A
+    ``RejectedFinding`` carries a single ``reason``, so a consumer must not read
+    it as "this is everything wrong with the object" -- a finding refused as
+    ``evidence_incomplete`` may ALSO be mislabelled, and that second defect is
+    never surfaced. Stated because the field name invites the stronger reading.
+
+    NO ACCEPT-OR-REFUSE DECISION HERE READS A SOURCE VALUE -- AND THAT NOW COVERS
+    ALL THREE STAGES, the evidence gate included. Neither ``arrived_on`` nor any
+    candidate's ``source`` attribute is compared, tested, switched on, or used to
+    select a code path: ``arrived_on`` is carried into the refusal record as data
+    and nothing else, and ``_empty_evidence_fields`` is not even given it. The
+    evidence field set is one module-level tuple with no per-source variant, so
+    "the gate is stricter for engine findings" is not a thing that could be
+    written here without adding a parameter that does not exist. That is what
+    makes the gate UNCONDITIONAL in the sense ADR-23 dec. 1 requires -- there is
+    no source for which the requirement is relaxed, because the code deciding
+    accept-or-refuse never branches on one. The one place a source value IS read
+    is the caller's
     verification step, which ADDS an identical requirement for every stream
     rather than relaxing one for any; the two run in opposite directions and only
     the second is what ADR-23 forbids.
@@ -203,7 +364,99 @@ def validate_finding(
             claimed_finding_id=claimed,
         )
 
+    # STAGE 3 -- EVIDENCE COMPLETENESS. Runs on ``validated``, never on
+    # ``candidate``, and the order is what makes it safe to write at all: after
+    # stage 2 the declared types are GUARANTEED, so ``inspected`` is a
+    # ``list[str]`` and ``observed_values`` is keyed by ``str``, and this gate can
+    # call ``str.strip`` without first proving what it holds. Run before stage 2
+    # it would be reading attributes off an object of unknown provenance to make a
+    # decision, which is what ADR-9 forbids untrusted data from doing.
+    empty = _empty_evidence_fields(validated)
+    if empty:
+        return RejectedFinding(
+            arrived_on=arrived_on,
+            position=position,
+            reason="evidence_incomplete",
+            detail=_evidence_detail(empty),
+            claimed_finding_id=validated.finding_id,
+        )
+
     return validated
+
+
+def _empty_evidence_fields(finding: Finding) -> list[str]:
+    """The evidence fields carrying nothing, in ``Finding``'s declaration order.
+
+    A LIST RATHER THAN A BOOL, so the refusal can name what was missing instead of
+    only that something was. Order is ``EVIDENCE_RULES``' -- the schema's own --
+    so two findings with the same defect produce byte-identical details.
+
+    WHITESPACE IS EMPTY. ``"   "``, ``"\\t"`` and ``"\\n"`` are refused exactly as
+    ``""`` is, and that is a decision rather than an accident of using ``strip``.
+    A field whose whole purpose is to state something states nothing when it holds
+    only spacing, and the two are indistinguishable to every reader downstream --
+    a renderer, a diff, or a person. Accepting whitespace would leave the gate
+    passing a finding that is empty in every sense a caller cares about while
+    reporting it as complete.
+
+    THE BOUND, STATED RATHER THAN IMPLIED, because a caller must not assume more
+    than this check makes true:
+
+      * ``observed_values`` IS JUDGED BY ITS KEYS AND NEVER BY ITS VALUES. So
+        ``{"determinable": None}`` is COMPLETE here: the finding named an
+        observation, and what it observed was nothing. A caller may assume some
+        observation is NAMED; it may not assume any value is meaningful, present,
+        or non-null.
+      * ``inspected`` is judged element by element, so ``[""]`` is INCOMPLETE --
+        a list whose only entry names nothing has not stated what was looked at.
+      * Nothing recurses. A nested structure inside ``observed_values`` is not
+        descended into, so an empty dict as a VALUE is complete.
+
+    WHY VALUES ARE NEVER INSPECTED, AND IT IS NOT A CONVENIENCE. ``observed_values``
+    is ``dict[str, Any]`` and pydantic does not validate ``Any``, so a value can be
+    any object at all. Deciding whether one is "empty" means calling ``bool()`` or
+    ``len()`` on it -- which runs that object's ``__bool__`` or ``__len__``.
+    Measured: a value defining either raises from inside the check. That would put
+    ENGINE-SUPPLIED CODE in control of a wrapper gate decision, which is precisely
+    the "untrusted data must never influence control flow" rule of ADR-9 §6.6.
+    Keys are safe by contrast for a checkable reason: stage 2 already forced them
+    to ``str``, so ``str.strip`` is a builtin on a known type and executes nothing
+    of anyone else's.
+
+    THAT THE CONTRACT FORBIDS READING INSIDE IS A SECOND, INDEPENDENT REASON.
+    ``FreshnessEvidence`` states that consumers "must never branch on a key name",
+    and there is no value vocabulary either; judging a value's emptiness would be
+    inventing one.
+
+    ``getattr`` RATHER THAN A TYPED ACCESSOR, and that is what keeps this function
+    free of suppression comments. ``getattr`` returns ``Any``, so each paired rule
+    receives a value no annotation has narrowed and no checker would object to --
+    which is exactly the remedy ``snapshot/assembler.py`` names for its own
+    comparable site rather than muting a tool this repo does not run.
+    """
+    return [
+        name
+        for name, carries_something in EVIDENCE_RULES
+        if not carries_something(getattr(finding, name))
+    ]
+
+
+def _evidence_detail(empty: list[str]) -> str:
+    """The refusal text, naming which evidence fields were blank.
+
+    NAMING THEM IS WRAPPER-SAFE, and by the same rule ``_schema_detail`` already
+    applies: every name here comes from ``EVIDENCE_FIELDS``, which is this
+    module's own tuple of ``Finding``-declared field names. Nothing engine-authored
+    reaches this string -- not a value, not a key, not an undeclared field name.
+    The count and the names are the whole content.
+    """
+    return (
+        f"{len(empty)} evidence field(s) carry nothing: {', '.join(empty)}. The "
+        "finding satisfies the schema in every other respect, so this is not a "
+        "malformed object -- it is a judgment presented without the evidence its "
+        "own schema requires it to show. A field holding only whitespace is "
+        "counted as carrying nothing."
+    )
 
 
 def _claimed_finding_id(candidate: object) -> str | None:

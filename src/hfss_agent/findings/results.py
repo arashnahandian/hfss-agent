@@ -61,16 +61,34 @@ from hfss_agent.contract import Finding, FindingSource
 #     established, which is one fact about one object. Splitting the member would
 #     make a consumer route on the mechanism of our check rather than on what
 #     happened to the finding.
+#   * ``evidence_incomplete`` -- it satisfies the schema in every respect and
+#     carries NO EVIDENCE in one or more of the fields whose whole purpose is to
+#     carry some. A DIFFERENT FACT FROM ``schema_invalid``, NOT A SEVERITY OF IT,
+#     and the difference is checkable rather than stylistic: ``schema_invalid``
+#     means the object's SHAPE could not be established, so nothing about its
+#     content was ever read; this one means the shape is perfect and the CONTENT
+#     is absent. A ``Finding`` with ``reason_flagged=""`` validates cleanly --
+#     measured, not assumed -- so no schema check can reach it, and folding the
+#     two together would tell a reader "we could not parse this" about an object
+#     that parsed perfectly. They also send a reader to different fixes: a schema
+#     failure is a producer emitting the wrong shape, an evidence failure is a
+#     producer emitting a judgment it cannot support.
 #   * ``source_mismatch`` -- it validates cleanly, and it claims a ``source`` it
 #     did not arrive on. A separate member because the finding is not malformed
 #     in any way a schema can see: every field is present and well-typed, and the
 #     only thing wrong is a claim about origin that the merge can check and the
 #     schema cannot.
 #
-# EVERY MEMBER HAS A PRODUCER IN THIS PART, which is ADR-28 dec. 4's rule applied
-# to a local type rather than a contract one. Part 2's evidence-completeness gate
-# adds a fourth when it has one; it is deliberately not declared ahead of it.
-RejectionReason = Literal["not_a_finding", "schema_invalid", "source_mismatch"]
+# EVERY MEMBER HAS A PRODUCER, which is ADR-28 dec. 4's rule applied to a local
+# type rather than a contract one. ``evidence_incomplete`` was deliberately NOT
+# declared at Part 1, when it had none; it is declared here, at the part that
+# builds its gate.
+RejectionReason = Literal[
+    "not_a_finding",
+    "schema_invalid",
+    "evidence_incomplete",
+    "source_mismatch",
+]
 
 
 @dataclass(frozen=True)
@@ -99,6 +117,23 @@ class RejectedFinding:
     # SHAPE, because the wrapper already holds it and no read of the malformed
     # object is required to obtain it.
     position: int
+    # THE FIRST FAILURE, NEVER THE COMPLETE LIST OF WHAT IS WRONG. A finding can
+    # carry more than one defect at once -- blank evidence AND a mislabelled
+    # source is the reachable pair -- and exactly one is reported, decided by the
+    # precedence written at ``receipt.validate_finding``. A consumer must not read
+    # this as an exhaustive diagnosis: fixing the reason named here can reveal
+    # another underneath it.
+    #
+    # SINGULAR RATHER THAN A TUPLE, DELIBERATELY. Reporting every defect was
+    # considered and is not proposed, on two grounds. The reasons are mostly
+    # SEQUENTIAL PRECONDITIONS rather than independent axes -- an object that is
+    # not a Finding cannot be schema-checked, and one that fails the schema cannot
+    # have its evidence read -- so "all defects" is only ever meaningful for the
+    # single evidence/source pair, which is a small return for a shape change on a
+    # type Step 3.3 will consume. And every sibling refusal type in this package
+    # (``SelectionRefused``, ``ExportRefused``, ``CannotEvaluate``) carries exactly
+    # one outcome; a second convention for the same job would only make a reader
+    # wonder which one means more.
     reason: RejectionReason
     # WRAPPER-AUTHORED, ALWAYS, and never a copy of the offending finding's own
     # prose. What may appear here is limited to: this module's own sentences,

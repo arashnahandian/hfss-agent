@@ -71,7 +71,7 @@ reason of its own -- the way Step 1.4 banked ten gaps for the Step 2.1 amendment
 """
 
 from hfss_agent.findings.merge import ENGINE_STREAM, GATE_STREAM, merge_findings
-from hfss_agent.findings.receipt import validate_finding
+from hfss_agent.findings.receipt import EVIDENCE_FIELDS, validate_finding
 from hfss_agent.findings.results import (
     FindingReceipt,
     RejectedFinding,
@@ -86,6 +86,11 @@ __all__ = [
     # The receipt gate, public because it is the unit the rejection tests drive
     # directly and because Part 2's evidence check extends it
     "validate_finding",
+    # WHICH fields the evidence gate requires content in. Exported rather than
+    # kept private for the reason ``GATE_OUTCOMES_THAT_QUALIFY_COMPUTATION`` is:
+    # it is a decision, and a consumer or a test comparing against it must read
+    # the SAME list the gate enforces rather than a second copy of it.
+    "EVIDENCE_FIELDS",
     # W-10's own result types. LOCAL, NOT CONTRACT -- see the module docstring
     "FindingReceipt",
     "RejectedFinding",

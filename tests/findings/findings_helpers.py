@@ -27,7 +27,7 @@ type are imported directly, so only the fixture VALUES live here.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 
 from hfss_agent.contract import (
@@ -41,10 +41,12 @@ from hfss_agent.contract import (
     FreshnessEvidence,
     InspectionProvenance,
     InspectionSection,
+    IntentObject,
     NativeValidation,
     NativeValidationProvenance,
     Project,
     SolutionExists,
+    SolveDataUnavailable,
     SolvedData,
     SolveState,
     Variation,
@@ -181,6 +183,126 @@ def snapshot() -> DesignSnapshot:
 def accepted_gate_findings() -> list[Finding]:
     """The four real gate findings, through the real assembler and real gates."""
     return evaluate_gates(snapshot(), TARGET_HZ)
+
+
+# --- the calibration sweep ---------------------------------------------------
+#
+# EVERY SNAPSHOT SHAPE THE GATES CAN BE HANDED, so the evidence gate is calibrated
+# against the whole space rather than one fixture. This is the Q6 recon sweep
+# rebuilt here: a gate that rejects the wrapper's own output on some rare arm is
+# exactly the defect a single-shape test cannot see.
+
+_ABSENCE_REASONS = (
+    "no_solution",
+    "not_exposed_by_pyaedt",
+    "not_found_in_design",
+    "unrecognised_by_wrapper",
+)
+
+
+def _unavailable(reason: str) -> SolveDataUnavailable:
+    return SolveDataUnavailable(
+        reason=reason,  # type: ignore[arg-type]
+        limitation=f"synthetic limitation for reason {reason}",
+    )
+
+
+def _solve_state_variants() -> dict[str, SolveState | SolveDataUnavailable]:
+    base = _solve_state()
+    variants: dict[str, SolveState | SolveDataUnavailable] = {
+        "converged": base,
+        "stopped": base.model_copy(update={"convergence_status": "stopped"}),
+        "no-matching-entry": base.model_copy(update={"solution_exists": []}),
+        "determinable": base.model_copy(
+            update={
+                "freshness_evidence": FreshnessEvidence(
+                    available_signals={"design_modified_since_solve": False},
+                    determinable=True,
+                )
+            }
+        ),
+        "no-history": base.model_copy(
+            update={"adaptive_pass_history": [], "delta_s_progression": []}
+        ),
+    }
+    variants.update({f"absent-{r}": _unavailable(r) for r in _ABSENCE_REASONS})
+    return variants
+
+
+def _solved_data_variants() -> dict[str, SolvedData | SolveDataUnavailable]:
+    variants: dict[str, SolvedData | SolveDataUnavailable] = {
+        "three-samples": _solved_data(),
+        "one-sample": SolvedData(
+            frequencies=[1e9],
+            s_parameters={"S(1,1)": [ComplexSample(real=-0.1, imag=0.0)]},
+        ),
+        # A sweep that RAN and returned nothing -- distinct from an absent one,
+        # and the shape that drives target_coverage's smallest evidence payload.
+        "swept-empty": SolvedData(frequencies=[], s_parameters={}),
+    }
+    variants.update({f"absent-{r}": _unavailable(r) for r in _ABSENCE_REASONS})
+    return variants
+
+
+def _intent_variants() -> dict[str, IntentObject | None]:
+    return {
+        "none": None,
+        "2.4GHz": IntentObject(
+            target_frequency_hz=2.4e9, threshold_type="s11", threshold_value=-10.0
+        ),
+        "nan": IntentObject(
+            target_frequency_hz=float("nan"),
+            threshold_type="s11",
+            threshold_value=-10.0,
+        ),
+    }
+
+
+SWEEP_TARGETS = (None, 2.4e9, 9.9e9, float("nan"), float("inf"), 0.0)
+
+
+def swept_gate_findings() -> Iterator[tuple[str, Finding]]:
+    """Every gate finding the sweep can produce, labelled by the shape behind it.
+
+    Yields ``(label, finding)`` so a calibration failure names the snapshot shape
+    that produced the offending finding rather than only that one exists.
+    """
+    for solve_label, solve in _solve_state_variants().items():
+        for data_label, data in _solved_data_variants().items():
+            for intent_label, intent_value in _intent_variants().items():
+                snap = assemble_snapshot(
+                    inspection=_inspection(),
+                    native_validation=_native(),
+                    solve_state=solve,
+                    solved_data=data,
+                    selection=_selection(),
+                    environment=Environment(
+                        aedt_version="2026.1",
+                        pyaedt_version="1.2.0",
+                        python_version="3.12.10",
+                        wrapper_version="0.0.0",
+                    ),
+                    intent=intent_value,
+                )
+                for target in SWEEP_TARGETS:
+                    label = (
+                        f"solve={solve_label} data={data_label} "
+                        f"intent={intent_label} target={target}"
+                    )
+                    for finding in evaluate_gates(snap, target):
+                        yield label, finding
+
+
+# The empty value for each evidence field, by its declared shape. Used to empty
+# ONE field at a time, so no single check can carry the others.
+EMPTY_FOR: dict[str, object] = {
+    "inspected": [],
+    "observed_values": {},
+    "calculation_ref": "",
+    "reason_flagged": "",
+    "rule_version": "",
+    "limitations_and_assumptions": "",
+}
 
 
 # --- engine-shaped findings: valid in every field, built here because no engine
