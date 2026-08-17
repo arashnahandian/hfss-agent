@@ -972,6 +972,239 @@ def test_every_evidence_field_is_paired_with_a_rule_that_handles_its_shape() -> 
         assert carries_something(value) is True, name
 
 
+# --- ordering and identity (Part 3) ------------------------------------------
+
+
+def test_accepted_findings_keep_stream_order_gate_first_then_engine() -> None:
+    """W-10's OWN ordering guarantee: concatenate, never interleave or sort.
+
+    NOT a restatement of ``evaluate_gates``' order -- that is W-9's guarantee and
+    is pinned twice in ``tests/gating``. What is asserted here is that THIS
+    function preserves whatever order it was handed, which is its own behaviour.
+    The engine findings are given deliberately unsorted ids so a sort would be
+    visible as a reordering rather than hidden by already-sorted input.
+
+    FAILS IF: the two streams are emitted in the other order, either stream is
+    reversed or sorted, or the merge interleaves them.
+    """
+    gates = accepted_gate_findings()
+    engine = [
+        engine_finding(finding_id="e-zulu"),
+        engine_finding(finding_id="e-alpha"),
+        engine_finding(finding_id="e-mike"),
+    ]
+
+    receipt = merge_findings(gate_findings=gates, engine_findings=engine)
+
+    assert [f.finding_id for f in receipt.accepted] == (
+        [f.finding_id for f in gates] + ["e-zulu", "e-alpha", "e-mike"]
+    )
+    assert [f.source for f in receipt.accepted] == [GATE_STREAM] * 4 + [
+        ENGINE_STREAM
+    ] * 3
+
+
+def test_a_refusal_removes_its_own_element_and_shifts_no_other() -> None:
+    """The other half of the guarantee: survivors keep their relative order.
+
+    A refusal in the middle of a stream must not reorder what remains, or a
+    caller correlating ``accepted`` against what they passed would silently line
+    up the wrong pairs.
+
+    FAILS IF: the merge collects survivors in any order other than the one it
+    walks, or a refusal causes a re-scan that appends out of order.
+    """
+    engine = [
+        engine_finding(finding_id="e-1"),
+        engine_finding(finding_id="e-2", reason_flagged=""),  # refused
+        engine_finding(finding_id="e-3"),
+        ghost(finding_id="e-4"),  # refused
+        engine_finding(finding_id="e-5"),
+    ]
+
+    receipt = merge_findings(gate_findings=(), engine_findings=engine)
+
+    assert [f.finding_id for f in receipt.accepted] == ["e-1", "e-3", "e-5"]
+    assert [r.position for r in receipt.rejected] == [1, 3]
+
+
+def test_two_merges_of_the_same_inputs_produce_equal_receipts() -> None:
+    """Determinism of the MERGE, which is what the ordering guarantee buys.
+
+    ONE INPUT SET, MERGED TWICE, and the shared inputs are load-bearing rather
+    than lazy. Two independently BUILT gate sets are never equal, because
+    ``assemble_snapshot`` mints a fresh ``snapshot_id`` per capture and it travels
+    into every ``FindingProvenance`` -- measured, when the first draft of this test
+    compared two separate ``accepted_gate_findings()`` calls and failed on exactly
+    that. That is upstream capture identity working correctly, not merge
+    nondeterminism, and a test that conflated the two would have been asserting
+    W-8's behaviour by accident.
+
+    THE COMPARISON IS STILL REAL because the merge does not hand back what it was
+    given: every accepted finding is a fresh object from the forcing pass, so
+    equality here is by VALUE across two independent object graphs.
+
+    FAILS IF: nondeterminism enters the merge -- a set, a dict iteration that is
+    not insertion-ordered, or a sort keyed on something unstable such as an
+    engine-authored id.
+    """
+    gates = accepted_gate_findings()
+    engine = [engine_finding(finding_id="e-1"), ghost(finding_id="bad")]
+
+    first = merge_findings(gate_findings=gates, engine_findings=engine)
+    second = merge_findings(gate_findings=gates, engine_findings=engine)
+
+    assert first == second
+    # Value equality across independent graphs, not the same objects handed back.
+    assert first.accepted[0] is not second.accepted[0]
+    assert first.accepted[0] is not gates[0]
+
+
+def test_real_gate_findings_never_collide_within_one_evaluation() -> None:
+    """The calibration half of the collision machinery.
+
+    Measured across the full sweep before this was written: 1,134
+    ``evaluate_gates`` calls, 4,536 findings, ZERO duplicate ids within any single
+    call -- the four gate names are distinct and the id is derived from the name
+    and the outcome. So the wrapper's own output must never be recorded as
+    colliding, and a collision detector that flagged it would be broken.
+
+    (Across DIFFERENT calls the same id repeats constantly -- only ten distinct
+    ids exist across all 4,536 -- which is ADR-31 dec. 9's stated limitation and
+    is not a collision within one merge.)
+
+    FAILS IF: collision detection widens to compare across evaluations, or starts
+    grouping on something other than the exact id.
+    """
+    receipt = merge_findings(
+        gate_findings=accepted_gate_findings(), engine_findings=()
+    )
+
+    assert receipt.id_collisions == ()
+    assert receipt.unidentified == ()
+    assert all(type(finding) is Finding for finding in receipt.accepted)
+
+
+def test_a_colliding_id_is_recorded_and_both_findings_are_kept() -> None:
+    """RECORDED, NOT REFUSED -- the decision, asserted as behaviour.
+
+    Both findings are otherwise perfect: full evidence, true source, every schema
+    field correct. Their only defect is a shared name, and refusing either would
+    discard a valid judgment over a labelling problem.
+
+    THE GROUP IS INDICES, NOT IDS, so no new field carries engine-authored text.
+
+    FAILS IF: a collision starts refusing a finding (``accepted`` would shrink),
+    or collisions stop being recorded (``id_collisions`` would be empty), or the
+    group carries the id string instead of positions.
+    """
+    receipt = merge_findings(
+        gate_findings=(),
+        engine_findings=[
+            engine_finding(finding_id="same"),
+            engine_finding(finding_id="unique"),
+            engine_finding(finding_id="same"),
+        ],
+    )
+
+    assert receipt.rejected == ()
+    assert len(receipt.accepted) == 3
+    assert receipt.id_collisions == ((0, 2),)
+    assert receipt.accepted[0].finding_id == receipt.accepted[2].finding_id
+
+
+def test_a_collision_across_the_two_streams_is_recorded() -> None:
+    """The cross-stream case the merge commitment named, and the SYMMETRY.
+
+    An engine finding duplicating a wrapper-minted gate id is the realistic
+    version of this. It is recorded exactly as an engine-vs-engine clash is: the
+    grouping never asks which stream an index came from, so neither stream is
+    treated more or less strictly than the other. That is uniformity in the same
+    sense ``_source_mismatch`` has it -- one rule applied identically -- rather
+    than an exemption for either side.
+
+    FAILS IF: collision detection is scoped to one stream, or gains a
+    source-keyed branch that spares the gate stream.
+    """
+    gates = accepted_gate_findings()
+    stolen = gates[0].finding_id
+
+    receipt = merge_findings(
+        gate_findings=gates, engine_findings=[engine_finding(finding_id=stolen)]
+    )
+
+    assert receipt.rejected == ()
+    assert len(receipt.accepted) == 5
+    # index 0 is the gate finding; index 4 is the engine one that copied its id
+    assert receipt.id_collisions == ((0, 4),)
+
+
+def test_a_blank_finding_id_is_recorded_as_unidentified_not_as_a_collision() -> None:
+    """A missing name is not a shared name.
+
+    A single blank id has no partner to collide with, yet the finding still
+    cannot be referred to. Recording it separately says the true thing; folding
+    it into ``id_collisions`` would report a "collision" of one.
+
+    FAILS IF: blank ids are grouped into ``id_collisions``, or dropped from the
+    receipt entirely, or the finding is refused.
+    """
+    receipt = merge_findings(
+        gate_findings=(),
+        engine_findings=[engine_finding(finding_id=""), engine_finding()],
+    )
+
+    assert receipt.rejected == ()
+    assert len(receipt.accepted) == 2
+    assert receipt.unidentified == (0,)
+    assert receipt.id_collisions == ()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t", "\n"])
+def test_a_whitespace_only_finding_id_is_also_unidentified(blank: str) -> None:
+    """Whitespace names nothing, the same rule the evidence gate applies.
+
+    Two blank ids are BOTH unidentified and are NOT reported as colliding with
+    each other -- the absence of a name is not a shared name.
+
+    FAILS IF: the blank test is weakened from ``strip()`` to a bare truthiness
+    check, which every value here except ``""`` would satisfy.
+    """
+    receipt = merge_findings(
+        gate_findings=(),
+        engine_findings=[
+            engine_finding(finding_id=blank),
+            engine_finding(finding_id=blank),
+        ],
+    )
+
+    assert receipt.unidentified == (0, 1)
+    assert receipt.id_collisions == ()
+
+
+def test_identity_anomalies_are_computed_over_survivors_only() -> None:
+    """A refused finding cannot make an accepted one ambiguous.
+
+    The refused finding here shares an id with an accepted one. Because it never
+    reaches ``accepted``, there is nothing for the survivor to be confused with,
+    and reporting a collision would name an object no consumer will ever see.
+
+    FAILS IF: the grouping is moved inside the merge loop or run over the inputs
+    rather than the survivors.
+    """
+    receipt = merge_findings(
+        gate_findings=(),
+        engine_findings=[
+            engine_finding(finding_id="twin"),
+            engine_finding(finding_id="twin", reason_flagged=""),  # refused
+        ],
+    )
+
+    assert len(receipt.accepted) == 1
+    assert len(receipt.rejected) == 1
+    assert receipt.id_collisions == ()
+
+
 # --- the stream constants, pinned against the contract -----------------------
 
 

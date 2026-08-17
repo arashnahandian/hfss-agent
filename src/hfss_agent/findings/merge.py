@@ -87,12 +87,37 @@ def merge_findings(
     Keyword-only makes the mistake UNCONSTRUCTIBLE, which is how this package
     handles dangerous states everywhere else, and it costs one character.
 
-    ORDERING IS NOT A COMMITMENT AT THIS PART. Gate findings are processed before
-    engine findings and each stream keeps its own order, but nothing here states
-    that as a guarantee and no test pins it yet -- the merge's ordering rule, and
-    what to do about a ``finding_id`` colliding across the two streams, are the
-    next part's. What IS committed here is that every element of both streams is
-    put through the identical receipt gate.
+    THE ORDERING GUARANTEE, WHICH THIS PART MAKES AND EARLIER PARTS DECLINED TO.
+    ``accepted`` carries the surviving gate findings first, then the surviving
+    engine findings, and WITHIN each stream the order the caller supplied. A
+    refusal removes its own element and shifts nothing else. Two merges of equal
+    inputs therefore produce equal receipts, byte for byte.
+
+    WHAT THIS IS NOT: it is not a restatement of ``evaluate_gates``' own order.
+    That guarantee -- four findings in ``GATE_NAMES`` order -- is W-9's, and it is
+    already pinned there twice (``test_evaluate_gates_always_returns_four_in_order``
+    and ``test_the_aggregator_order_matches_the_contract_fixtures_spelling``).
+    Re-asserting it here would be two sources for one fact. What is claimed here is
+    strictly about THIS function's behaviour: that it CONCATENATES rather than
+    interleaving, sorting or reordering, whatever order it was handed.
+
+    TWO REASONS, AND THE SECOND IS THE LOAD-BEARING ONE:
+
+      * DIFFABILITY. The same reason W-5 and W-6 make their ``template_text``
+        byte-deterministic: a diff between two receipts should show what changed
+        in the design, not what changed in iteration order.
+      * ``RejectedFinding.position`` MEANS NOTHING WITHOUT IT. That field is an
+        index into the stream as the caller passed it, and it is the only identity
+        total over every input shape. A caller correlating a refusal -- or an
+        accepted finding -- against what they handed in can only do so if this
+        function preserves relative order. The receipt's own identity mechanism
+        depends on the guarantee, which makes it internal rather than a courtesy
+        to a hypothetical renderer.
+
+    IDENTITY ANOMALIES ARE RECORDED, NOT REFUSED. A ``finding_id`` that clashes
+    with another, or that is blank, is reported on the receipt rather than costing
+    a finding its place -- see ``FindingReceipt.id_collisions`` and
+    ``.unidentified`` for the argument, and ``_id_anomalies`` for the derivation.
 
     THE ELEMENTS ARE UNTRUSTED; THE CONTAINERS ARE THE CALLER'S. Every element is
     treated as an object of unknown provenance, whatever the annotation says --
@@ -130,7 +155,59 @@ def merge_findings(
                 continue
             accepted.append(outcome)
 
-    return FindingReceipt(accepted=tuple(accepted), rejected=tuple(rejected))
+    survivors = tuple(accepted)
+    collisions, unidentified = _id_anomalies(survivors)
+    return FindingReceipt(
+        accepted=survivors,
+        rejected=tuple(rejected),
+        id_collisions=collisions,
+        unidentified=unidentified,
+    )
+
+
+def _id_anomalies(
+    accepted: tuple[Finding, ...],
+) -> tuple[tuple[tuple[int, ...], ...], tuple[int, ...]]:
+    """Which accepted findings cannot be told apart, and which cannot be named.
+
+    RUN OVER THE SURVIVORS ONLY, which is the whole point of running it here
+    rather than inside the loop. A refused finding is not handed on, so it cannot
+    make an accepted one ambiguous; grouping before the refusals were known would
+    report clashes with objects nobody will ever see.
+
+    DETERMINISTIC BY CONSTRUCTION. Groups come out in first-occurrence order
+    because ``dict`` preserves insertion order, and the indices inside each group
+    are ascending because ``enumerate`` produces them that way. No sort is applied
+    and none is needed -- which matters, because a sort over engine-authored id
+    strings would make the output depend on their content.
+
+    GROUPING BY AN UNTRUSTED VALUE IS NOT BRANCHING ON ONE, and the distinction is
+    worth stating because the id is engine-authored. ADR-9 forbids untrusted text
+    influencing CONTROL FLOW -- tool routing, tier decisions, file paths. Nothing
+    of that kind happens here: no code path is selected, no capability is chosen,
+    and the same statements execute whatever the ids hold. The id is used as a
+    dictionary key exactly as ``Counter`` would use it, and the result is data.
+
+    Returns:
+        ``(collisions, unidentified)`` -- groups of indices sharing one non-blank
+        id, and the indices whose id is blank. Blank ids never appear in the first
+        (see ``FindingReceipt.unidentified`` for why the absence of a name is not
+        a shared name).
+    """
+    positions_by_id: dict[str, list[int]] = {}
+    unidentified: list[int] = []
+    for index, finding in enumerate(accepted):
+        if not finding.finding_id.strip():
+            unidentified.append(index)
+            continue
+        positions_by_id.setdefault(finding.finding_id, []).append(index)
+
+    collisions = tuple(
+        tuple(positions)
+        for positions in positions_by_id.values()
+        if len(positions) > 1
+    )
+    return collisions, tuple(unidentified)
 
 
 def _source_mismatch(

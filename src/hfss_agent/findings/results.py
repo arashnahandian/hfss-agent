@@ -184,3 +184,52 @@ class FindingReceipt:
 
     accepted: tuple[Finding, ...]
     rejected: tuple[RejectedFinding, ...]
+    # --- identity anomalies among the ACCEPTED findings ----------------------
+    #
+    # RECORDED, NOT REFUSED, and that is the decision rather than the easy path.
+    # A finding whose id clashes with another's, or whose id is blank, may be a
+    # perfectly good judgment: full evidence, true source, every schema field
+    # correct. Its only defect is its NAME. Refusing it would discard a judgment
+    # over a labelling problem -- the same trade Part 1 refused when it normalized
+    # a method-only subclass rather than rejecting it, and Part 2 refused when it
+    # kept identity fields out of the evidence gate.
+    #
+    # AND THE OFFENCE IS NOT ATTRIBUTABLE TO ONE PARTY. Two findings share an id;
+    # neither is "the offender". Refusing the second would make the verdict depend
+    # on arrival order, which this module has just committed to as a stated
+    # guarantee -- so a rule keyed on it would be arbitrary in a newly load-bearing
+    # way. Refusing both would discard two judgments to punish one clash. The
+    # precedent for recording instead is ``broker/audit/reader.py``'s
+    # ``AuditReadResult``: surviving records are returned, and what is wrong with
+    # the set is stated beside them.
+    #
+    # MEASURED FIRST: NOTHING KEYS, INDEXES, DEDUPES OR LOOKS UP BY ``finding_id``
+    # anywhere in ``src/`` -- the only readers are the four gate construction sites
+    # that mint it and this package, which uses it to LABEL a refusal. So a
+    # collision corrupts no lookup and drops no record; the harm is narrower and
+    # entirely real: two accepted findings a reader cannot tell apart.
+    #
+    # POSITIONS RATHER THAN IDS, so no new field carries untrusted text. An
+    # engine-authored ``finding_id`` is unenveloped prose (Part 4 owns that), and
+    # ``claimed_finding_id`` on a refusal is already the one field bearing it.
+    # Indices cost a consumer one dereference into ``accepted`` -- where the id
+    # lives anyway -- and keep the untrusted surface exactly where it was.
+    #
+    # Groups of indices into ``accepted`` that share one non-blank id, in
+    # first-occurrence order. Each group holds at least two entries; a lone id is
+    # not a collision and is not listed.
+    id_collisions: tuple[tuple[int, ...], ...] = ()
+    # Indices into ``accepted`` whose ``finding_id`` is blank after stripping.
+    #
+    # A SEPARATE FACT FROM A COLLISION, not a degenerate case of one, and the two
+    # are kept apart for the same reason ``RejectionReason``'s members are. A
+    # collision says two findings cannot be told APART; a blank id says one finding
+    # cannot be REFERRED TO at all, which is true of a single one with no partner.
+    # Blank ids are therefore excluded from ``id_collisions`` rather than grouped
+    # there: the absence of a name is not a shared name.
+    #
+    # ENGINE-ONLY IN PRACTICE, measured: ``gating.common.finding_id`` builds
+    # ``f"gate-{name}-{outcome}"``, so the literal ``gate-`` prefix survives even
+    # an empty gate name and no gate finding can carry a blank id on any snapshot
+    # shape. This records a state only a separately-built producer can reach.
+    unidentified: tuple[int, ...] = ()
