@@ -73,6 +73,44 @@ from hfss_agent.contract import Finding, FindingSource
 #     that parsed perfectly. They also send a reader to different fixes: a schema
 #     failure is a producer emitting the wrong shape, an evidence failure is a
 #     producer emitting a judgment it cannot support.
+#   * ``non_inert_value`` -- it satisfies the schema in every respect, and one of
+#     its two ``Any``-typed fields carries an OBJECT where only a value may
+#     travel: a ``pathlib.Path``, a callable, a live handle, a ``datetime``, a
+#     ``str`` subclass carrying state. A FIFTH DIFFERENT FACT, and its difference
+#     from each of the four above is checkable rather than stylistic:
+#       - NOT ``schema_invalid``, because the schema VALIDATED this object.
+#         ``observed_values`` and ``applicability.conditions`` are
+#         ``dict[str, Any]`` and pydantic does not validate ``Any`` -- so unlike
+#         every shape that member covers, nothing here failed a check. Measured
+#         end to end: a ``Path`` planted in ``FreshnessEvidence.available_signals``
+#         is copied by the real freshness gate into ``observed_values``, survives
+#         the receipt gate's forcing pass intact, and reaches the finding's JSON
+#         as a plain string carrying the operator's Windows account name.
+#       - NOT ``evidence_incomplete``. That member means a field carries NOTHING;
+#         this one means a field carries something that is not data. They are
+#         opposite defects, and they send a producer to opposite fixes -- telling
+#         a rule author its evidence is missing, when what it actually shipped was
+#         a bound method, is the wrong instruction.
+#       - NOT ``source_mismatch``, which is a property of the object's
+#         RELATIONSHIP to the stream that carried it. This one is intrinsic: the
+#         same finding carries the same object on either stream.
+#       - NOT ``not_a_finding``: this object IS a ``Finding``, and its contents
+#         were examined rather than being out of reach.
+#
+#     NAMED ``non_inert_value``, AND ``non_inert_evidence`` WAS THE FIRST
+#     PROPOSAL AND WAS WRONG. The check covers two sites and only one of them is
+#     evidence: ``finding.py`` groups ``inspected`` / ``observed_values`` /
+#     ``calculation_ref`` / ``reason_flagged`` under "Evidence" and
+#     ``limitations_and_assumptions`` / ``applicability`` under "Honesty", and
+#     Part 2's ``EVIDENCE_FIELDS`` excludes ``applicability`` for exactly that
+#     reason. So a bound method found in ``applicability.conditions`` and reported
+#     as ``non_inert_evidence`` would be a true sentence under a false label --
+#     the shape ``metrics/assembler.py`` has already renamed a constant over
+#     (``_ONLY_PASS_PERMITS_NOTICE`` -> ``_REFUSAL_POLICY_NOTICE``, where
+#     "the old name asserted the old policy, so leaving it would have left a true
+#     sentence under a false label"). ``value`` is accurate at both sites, and it
+#     is the word the allow-list itself is written in: what may travel is a value,
+#     and what may not is an object.
 #   * ``source_mismatch`` -- it validates cleanly, and it claims a ``source`` it
 #     did not arrive on. A separate member because the finding is not malformed
 #     in any way a schema can see: every field is present and well-typed, and the
@@ -82,10 +120,14 @@ from hfss_agent.contract import Finding, FindingSource
 # EVERY MEMBER HAS A PRODUCER, which is ADR-28 dec. 4's rule applied to a local
 # type rather than a contract one. ``evidence_incomplete`` was deliberately NOT
 # declared at Part 1, when it had none; it is declared here, at the part that
-# builds its gate.
+# builds its gate. ``non_inert_value`` follows the same rule at Part 6: its
+# producer is ``receipt.validate_finding``'s third stage, and the producer is
+# reachable through real code rather than only through a fixture -- see the
+# measurement named above.
 RejectionReason = Literal[
     "not_a_finding",
     "schema_invalid",
+    "non_inert_value",
     "evidence_incomplete",
     "source_mismatch",
 ]
@@ -118,19 +160,24 @@ class RejectedFinding:
     # object is required to obtain it.
     position: int
     # THE FIRST FAILURE, NEVER THE COMPLETE LIST OF WHAT IS WRONG. A finding can
-    # carry more than one defect at once -- blank evidence AND a mislabelled
-    # source is the reachable pair -- and exactly one is reported, decided by the
-    # precedence written at ``receipt.validate_finding``. A consumer must not read
-    # this as an exhaustive diagnosis: fixing the reason named here can reveal
-    # another underneath it.
+    # carry more than one defect at once -- a non-inert value, blank evidence and
+    # a mislabelled source are mutually independent and all three are reachable on
+    # one object -- and exactly one is reported, decided by the precedence written
+    # at ``receipt.validate_finding``. A consumer must not read this as an
+    # exhaustive diagnosis: fixing the reason named here can reveal another
+    # underneath it.
     #
     # SINGULAR RATHER THAN A TUPLE, DELIBERATELY. Reporting every defect was
-    # considered and is not proposed, on two grounds. The reasons are mostly
+    # considered and is not proposed, on two grounds. The first two reasons are
     # SEQUENTIAL PRECONDITIONS rather than independent axes -- an object that is
     # not a Finding cannot be schema-checked, and one that fails the schema cannot
-    # have its evidence read -- so "all defects" is only ever meaningful for the
-    # single evidence/source pair, which is a small return for a shape change on a
-    # type Step 3.3 will consume. And every sibling refusal type in this package
+    # have its values walked or its evidence read -- so "all defects" is only ever
+    # meaningful across the last three, which is a small return for a shape change
+    # on a type Step 3.3 will consume. (Part 6 widened that group from two members
+    # to three and did not change the conclusion; if it ever reaches a size where
+    # a consumer genuinely needs the set, that is the moment to revisit, and this
+    # sentence is here so the count is visible when it does.) And every sibling
+    # refusal type in this package
     # (``SelectionRefused``, ``ExportRefused``, ``CannotEvaluate``) carries exactly
     # one outcome; a second convention for the same job would only make a reader
     # wonder which one means more.

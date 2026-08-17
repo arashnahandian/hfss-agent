@@ -1,9 +1,11 @@
 """W-10 · findings — receipt validation, attribution, sanitization.
 
 Validates every finding the engine returns against the findings schema and
-rejects malformed or evidence-incomplete findings as protocol errors; merges gate
-and engine findings with per-finding source attribution; applies the
-untrusted-string envelope to every HFSS-sourced string.
+rejects malformed or evidence-incomplete findings as protocol errors; refuses any
+finding carrying an object rather than a value in either of the two fields
+pydantic does not validate; merges gate and engine findings with per-finding
+source attribution; applies the untrusted-string envelope to every HFSS-sourced
+string.
 
 Native HFSS validation does NOT pass through here (ADR-23). It is not a
 ``Finding``, it never enters the merge, and W-6 delivers it as its own
@@ -71,7 +73,12 @@ reason of its own -- the way Step 1.4 banked ten gaps for the Step 2.1 amendment
 """
 
 from hfss_agent.findings.merge import ENGINE_STREAM, GATE_STREAM, merge_findings
-from hfss_agent.findings.receipt import EVIDENCE_FIELDS, validate_finding
+from hfss_agent.findings.receipt import (
+    ANY_TYPED_FIELDS,
+    EVIDENCE_FIELDS,
+    INERT_LEAF_TYPES,
+    validate_finding,
+)
 from hfss_agent.findings.results import (
     FindingReceipt,
     RejectedFinding,
@@ -91,6 +98,13 @@ __all__ = [
     # it is a decision, and a consumer or a test comparing against it must read
     # the SAME list the gate enforces rather than a second copy of it.
     "EVIDENCE_FIELDS",
+    # WHICH fields carry values pydantic does not validate, and WHICH types may
+    # travel in them. Exported for the identical reason: both are decisions, and
+    # the calibration test that proves the wrapper's own output survives the walk
+    # must compare against the tuples the walk actually enforces. A test carrying
+    # its own copy of the allow-list would pass while the gate refused everything.
+    "ANY_TYPED_FIELDS",
+    "INERT_LEAF_TYPES",
     # W-10's own result types. LOCAL, NOT CONTRACT -- see the module docstring
     "FindingReceipt",
     "RejectedFinding",

@@ -35,12 +35,36 @@ a ``min_length`` or any other constraint. No schema check can ever reach it, so
 without this gate a judgment presented with no evidence at all would be handed on
 as an accepted finding.
 
-WHAT IT DOES NOT CATCH, so the claim stays the size of the mechanism: a
-``Finding`` whose ``observed_values`` carries a callable, a ``pathlib.Path`` or a
-live handle validates CLEANLY through this pass and the object survives intact.
-``Finding.observed_values`` is ``dict[str, Any]`` and pydantic does not validate
-``Any``. That hole is real, it was measured, and it belongs to this step's
-inert-leaf part -- not to this module, which would only be able to pretend.
+THEN A THIRD GATE: INERT VALUES. Until Part 6 this docstring recorded the hole
+below as belonging to a later part, and it now belongs here, so the measurement
+is kept and the disclaimer replaced. A ``Finding`` whose ``observed_values``
+carries a callable, a ``pathlib.Path`` or a live handle validates CLEANLY through
+the forcing pass and the object survives intact: ``observed_values`` and
+``applicability.conditions`` are ``dict[str, Any]``, and pydantic does not
+validate ``Any``. These are the ONLY two such fields on a ``Finding`` -- derived
+by walking ``Finding.model_fields`` and every nested model, not by listing them
+from memory, and pinned that way by a test.
+
+The leak was measured end to end rather than reasoned about: a ``Path`` planted
+in ``FreshnessEvidence.available_signals``, carried through the REAL
+``assemble_snapshot`` and copied verbatim into ``observed_values`` by the REAL
+freshness gate, produced a finding whose JSON contained
+``"C:\\Users\\Owner\\Documents\\Ansoft\\patch_antenna.aedt"`` -- a filesystem
+path including the operator's Windows account name -- and it FLATTENED SILENTLY,
+because pydantic serializes a ``Path`` to a plain string without complaint. W-8
+drops that path deliberately so no filesystem string crosses into the engine
+(``snapshot/assembler._selection``, pinned by
+``tests/snapshot/test_path_is_dropped.py``); a finding carrying it back would
+defeat that decision from the return path. A callable and a live handle behave
+differently and worse in one respect: they survive ``model_dump()``, raise only
+on ``model_dump_json()``, and the live handle was measured still carrying a bound
+method after the receipt gate had accepted it.
+
+WHAT STILL IS NOT CAUGHT, so the claim stays the size of the mechanism: a
+``str`` is inert and may still be hostile text. Control characters and
+instruction-shaped prose pass all three gates unchanged. That is Part 4's
+envelope and is deliberately untouched here -- an untrusted string and a
+non-inert object are different problems.
 
 THE ANNOTATION IS NOT THE ENFORCEMENT. The engine seam is declared
 ``evaluate(DesignSnapshot) -> list[Finding]``, but the engine is a separately
@@ -87,6 +111,323 @@ _UNDUMPABLE_DETAIL = (
     "object's own code path. The underlying error is deliberately not echoed "
     "here: its text is not wrapper-authored."
 )
+
+# --- the inert-value gate ----------------------------------------------------
+#
+# THE TWO FIELDS PYDANTIC DOES NOT VALIDATE, as component paths from the
+# ``Finding`` root. DERIVED BY MEASUREMENT, NOT RECALLED: walking
+# ``Finding.model_fields`` and every nested model type reports exactly two
+# annotations admitting an arbitrary object -- ``observed_values`` and
+# ``applicability.conditions``. Everything else bottoms out in ``str``,
+# ``str | None``, ``bool``, a closed ``Literal``, or ``dict[str, str]``.
+#
+# PATHS RATHER THAN NAMES, because one of the two is not a field of ``Finding``
+# at all; it is a field of ``Applicability``, one model down. A flat name list
+# could not express it and would have quietly walked the wrong thing.
+#
+# A TEST DERIVES THIS SET FROM THE MODEL AND ASSERTS EQUALITY, so a third
+# ``Any`` hole added to the contract fails AT THE DECISION rather than leaking
+# past a hand-maintained tuple -- the shape ADR-31 dec. 16 used for the outcome
+# partition. This constant is what the walk enforces and what that test compares
+# against; there is no second copy.
+ANY_TYPED_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("observed_values",),
+    ("applicability", "conditions"),
+)
+
+# WHAT MAY TRAVEL: an ALLOW-LIST OF EXACT TYPES, never a denylist of forbidden
+# ones. A denylist is a list of the objects someone thought of; the space of
+# objects an engine can construct is not enumerable, and this package inverted an
+# audit to allow-list polarity for that reason already.
+#
+# DERIVED FROM REAL OUTPUT. Swept every snapshot shape the gate suite can build
+# through the real ``assemble_snapshot`` -> ``evaluate_gates`` path: 1,134
+# evaluations, 4,536 findings, and the union of leaf types across both fields is
+# exactly ``{bool, float, int, str}``. Container types encountered: ``dict`` and
+# ``list``, nothing else. Maximum nesting depth: 2. Every key at every depth: a
+# ``str``. So four of the five entries below are what the wrapper's own output
+# actually contains, and the walk cannot refuse it.
+#
+# ``type(None)`` IS THE FIFTH AND THE SWEEP NEVER PRODUCED ONE, so it is admitted
+# deliberately and for a stated reason rather than by analogy. Part 2 already
+# fixed ``{"determinable": None}`` as a COMPLETE finding -- see
+# ``_empty_evidence_fields``' bound, and ``test_a_null_observed_value_under_a
+# _real_key_is_complete``, which pins it as accepted. Refusing ``None`` here
+# would silently reverse a bound this module stated two parts ago, from a part
+# whose subject is something else entirely. It is also the one entry that cannot
+# be faked: ``NoneType`` is NOT SUBCLASSABLE (measured -- ``type 'NoneType' is
+# not an acceptable base type``) and admits exactly one instance, so unlike the
+# other four it cannot carry state or behaviour under any input.
+#
+# ``datetime`` IS DELIBERATELY EXCLUDED, AND THIS IS THE ONE PLACE W-8'S
+# ALLOW-LIST IS NOT COPIED. ``tests/snapshot/test_inert_leaves.py`` admits it
+# because the contract DECLARES two datetime fields, so a JSON round trip
+# restores them through the field's own validator. Inside an ``Any`` hole there
+# is no declared type to restore anything: measured, a ``datetime`` here
+# round-trips to the ``str`` ``'2026-08-03T08:00:00Z'`` and the finding no longer
+# equals itself -- which is IDENTICALLY the silent-flattening behaviour of the
+# ``pathlib.Path`` this gate exists to catch. Admitting it would admit the very
+# failure class. ``Finding`` declares no datetime field anywhere, and the sweep
+# produced none.
+#
+# WHAT A RULE AUTHOR SHOULD DO INSTEAD, stated here and echoed in the refusal
+# text, because a refusal that does not say what to do instead gets worked
+# around: put the ISO-8601 STRING in ``observed_values``, not the ``datetime``.
+# That is not a concession -- it is what crossing this seam does to the value in
+# any case, since a ``Finding`` reaches a consumer as JSON. The same answer
+# covers a ``pathlib.Path`` (its string form), a ``Decimal`` (``float`` or its
+# string form) and an identifier object (its string form). Nothing is lost that
+# the wire was ever going to carry.
+#
+# EXACT TYPE, NOT ``isinstance``, for the two reasons W-8 records and one it does
+# not face. A ``str`` subclass carrying state passes ``isinstance`` -- measured
+# here, not borrowed: planted as a VALUE it survives the forcing pass with its
+# attribute and its method intact, and its JSON is byte-identical to a plain
+# string's. ``bool`` subclasses ``int``, so it must be named rather than
+# inherited. And the third: a ``dict`` SUBCLASS passes ``isinstance(x, dict)``,
+# after which ``x.items()`` dispatches to whatever the engine wrote -- measured
+# against an isinstance-based walk, where a subclass whose ``items()`` raises
+# took the whole walk down. Exact-type matching is what makes descending safe,
+# not merely strict. (Container subclasses do not in fact reach this walk today,
+# because stage 2 normalizes them; see ``_carries_a_non_inert_object``, which
+# records what that does and does not leave for this check to do.)
+INERT_LEAF_TYPES: tuple[type, ...] = (str, int, float, bool, type(None))
+
+
+def _is_inert(node_type: type) -> bool:
+    """Is this exact type one the allow-list admits?
+
+    WRITTEN AS AN IDENTITY CHAIN OVER THE TUPLE, AND ``node_type in
+    INERT_LEAF_TYPES`` WOULD BE A SECURITY BUG. This is the least obvious line in
+    the module, so it is measured rather than argued:
+
+      * ``type(node) in INERT_LEAF_TYPES`` compares with ``==`` for every entry
+        that is not identical. An engine can give its class a METACLASS defining
+        ``__eq__``, and Python tries the reflected operation first because the
+        metaclass is a subclass of ``type`` -- so the comparison RUNS
+        ENGINE-SUPPLIED CODE. Measured: it raised ``RuntimeError`` out of the
+        membership test.
+      * ``type(node) in frozenset(INERT_LEAF_TYPES)`` is worse, not better: set
+        membership hashes first, so a metaclass ``__hash__`` runs instead.
+        Measured: it raised too.
+      * ``any(node_type is inert for inert in ...)`` compares by IDENTITY only.
+        ``is`` dispatches to nothing at all. Measured: returns ``False``, runs
+        nothing.
+
+    This is the same rule ADR-9 §6.6 states and Part 2 applied to ``bool()`` and
+    ``len()``: untrusted data must never influence control flow. A membership
+    test looks nothing like a call, which is exactly why it is worth the
+    paragraph -- and note that the hazard only bites the objects this gate exists
+    to catch, because an inert type matches the first identity check and never
+    reaches a comparison at all.
+    """
+    return any(node_type is inert for inert in INERT_LEAF_TYPES)
+
+
+def _carries_a_non_inert_object(root: object) -> bool:
+    """Does anything anywhere under ``root`` fail the allow-list?
+
+    THIS FUNCTION CANNOT RAISE, FOR ANY INPUT, AND THAT IS LOAD-BEARING RATHER
+    THAN TIDY. It is called from ``validate_finding``'s stage 3, which sits
+    OUTSIDE both ``try`` blocks -- the exact position from which Part 2's
+    dispatch fall-through sent an ``AttributeError`` escaping a function
+    documented never to raise. Widening a guard to cover this call would hide
+    that class of bug again, so the property is established instead of caught.
+    What makes it true, item by item, each one measured against a real hostile
+    object rather than assumed:
+
+      * NOTHING OF THE NODE'S IS EXECUTED. ``type(x)`` and ``id(x)`` dispatch to
+        nothing; ``is`` dispatches to nothing; ``_is_inert`` compares by identity
+        only. So no ``__iter__``, ``__bool__``, ``__len__``, ``__eq__``,
+        ``__hash__``, ``__repr__``, ``keys()`` or ``items()`` of an engine object
+        ever runs. Probed against all seven of those raising deliberately.
+      * ONLY EXACT ``dict`` AND ``list`` ARE DESCENDED, so ``node.items()`` and
+        the ``list`` iteration below are the builtins and cannot be overridden.
+        A subclass is not descended into -- it is REPORTED.
+        THAT BRANCH IS A SECOND LINE AND NOT THE FIRST, and the distinction is
+        measured rather than assumed, because the obvious reading over-credits
+        this walk. ``model_dump`` REBUILDS a ``dict`` or ``list`` subclass as an
+        exact container at every depth, discarding its attributes and methods and
+        without calling its ``items()``, ``keys()`` or ``__iter__`` -- so stage 2
+        has already normalized one away before this walk runs, exactly as it
+        normalizes a method-only ``Finding`` subclass, and such an object is
+        ACCEPTED rather than refused. A ``str`` subclass is NOT rebuilt and does
+        reach here. What this branch guarantees is therefore narrower and still
+        worth having: that the walk cannot be made to execute a container
+        subclass's code even if one ever reaches it.
+      * IT TERMINATES ON EVERY INPUT. ``seen`` makes each container be walked
+        once, so a cycle -- a dict containing itself, a self-appending list, two
+        dicts referring to each other -- is finite. Measured: all three
+        terminate, and a cycle DOES reach here, because the forcing pass
+        preserves it intact.
+      * IT IS ITERATIVE, NOT RECURSIVE, and that is not style. Nests 1,500 deep
+        survive construction and the forcing pass, while the default recursion
+        limit is 1,000 -- so the natural recursive spelling raises
+        ``RecursionError`` on an input the engine controls. Worse, that error
+        subclasses ``RuntimeError`` and would be swallowed by the broad guard
+        two stages up and misreported as a schema failure. Probed to 5,000 deep
+        and 50,000 wide.
+
+    THE ``id()`` PRECONDITION, WRITTEN DOWN BECAUSE COPYING THIS WALK SOMEWHERE
+    ELSE COULD BREAK IT SILENTLY. An identity-keyed visited set is only sound
+    while every container it has recorded is still ALIVE -- CPython reuses an
+    address after collection, so a freed container's id could be matched against
+    a different one and a whole subtree skipped. It is sound HERE because every
+    node reachable from ``root`` is held by the live ``Finding`` the caller is
+    still holding, and additionally by ``pending`` while queued, for the entire
+    duration of the walk. Nothing is constructed inside this function and nothing
+    can be collected during it. A caller that walked a structure built lazily --
+    a generator's output, say -- would not have that guarantee and must not reuse
+    this shape.
+
+    SHORT-CIRCUITS AT THE FIRST OFFENDER, deliberately. Counting them all would
+    be one more wrapper-owned number for the refusal, and it is declined: it is
+    not more actionable (the fix is the same either way), and stopping early
+    means the walk touches strictly less of a structure of unknown provenance.
+
+    Returns:
+        ``True`` if any leaf, at any depth, in a KEY position or a VALUE
+        position, has an exact type the allow-list does not admit.
+    """
+    seen: set[int] = set()
+    # An explicit stack, not the call stack -- see the docstring. Order of
+    # traversal is not specified and nothing depends on it: the answer is a
+    # single boolean over the whole structure.
+    pending: list[object] = [root]
+    while pending:
+        node = pending.pop()
+        node_type = type(node)
+        if node_type is dict:
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            # BOTH HALVES OF EVERY ITEM. Keys are validated to ``str`` by the
+            # schema at the TOP level of each site only -- measured: one level
+            # deeper an ``int``, a ``tuple``, a ``Path``, a ``datetime`` and
+            # ``bytes`` all survive as keys, and a ``Path`` used as a nested key
+            # reaches the JSON carrying the account name exactly as a value
+            # would. A values-only walk would miss that entirely.
+            for key, value in node.items():
+                pending.append(key)
+                pending.append(value)
+            continue
+        if node_type is list:
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            pending.extend(node)
+            continue
+        if _is_inert(node_type):
+            continue
+        return True
+    return False
+
+
+# NO ``ALLOWED_CONTAINER_TYPES`` CONSTANT, unlike W-8's walk, and the absence is
+# deliberate. There the two containers are handled by one generic branch, so a
+# tuple states the rule; here ``dict`` and ``list`` need different bodies (a dict
+# yields keys AND values, a list yields items), so a constant beside them would
+# be decorative -- a second statement of a fact the two branches already make,
+# and one that could drift out of agreement with them. ``tuple`` and ``set`` are
+# not containers for this walk's purposes: the sweep produced neither, and both
+# flatten to a JSON list, so an in-process consumer and a JSON consumer would see
+# different shapes of the same finding.
+
+
+def _non_inert_detail(sites: list[str]) -> str:
+    """The refusal text: which FIELDS carried an object, and nothing more.
+
+    WHAT MAY APPEAR HERE IS NARROWER THAN AT ANY OTHER REFUSAL SITE, and the two
+    exclusions are the interesting part.
+
+    THE OFFENDING TYPE IS NOT NAMED. ``_NOT_A_FINDING_DETAIL`` already refuses to
+    name a foreign object's type on the grounds that a type name is chosen by
+    whoever wrote the object; here that is not merely a convention about naming
+    but a measured fact about mutability. ``type(x).__name__``,
+    ``__qualname__`` and ``__module__`` are all ASSIGNABLE, to any string
+    whatever -- measured, including one carrying ``\\x1b[31m`` and
+    ``IGNORE ALL PREVIOUS INSTRUCTIONS``. So echoing a type name is not
+    "reporting a type", it is echoing an engine-authored string into a
+    wrapper-authored field, and it would do so at the one moment a reader is
+    most inclined to trust the text.
+
+    THE LOCATION INSIDE THE FIELD IS NOT NAMED EITHER, for the same reason one
+    step further in. A path like ``observed_values['handle']`` reads as
+    structural and is not: every component after the first is a KEY, and keys
+    below the top level are engine-authored (they are not even validated to
+    ``str`` -- see the walk). Naming the root field is safe precisely because it
+    is the one component ``Finding`` and ``Applicability`` declare.
+
+    THE DIAGNOSTIC LOSS, STATED RATHER THAN LEFT TO BE DISCOVERED, the way
+    ``_schema_detail`` states its named-vs-counted trade: a reader learns THAT a
+    field carried an object and WHICH field, and cannot learn WHAT the object was
+    or WHERE in the structure it sat. For a rule author that is usually enough,
+    because they hold the producing code; for anyone else it is deliberately a
+    dead end, and the finding itself is not carried on this record to make up the
+    difference. The count is of FIELDS, not of objects -- the walk stops at the
+    first offender in each field, so no object count exists to report.
+    """
+    return (
+        f"{len(sites)} field(s) carry an object where only a value may travel: "
+        f"{', '.join(sites)}. The finding satisfies the schema in every respect: "
+        "these fields are typed dict[str, Any], and pydantic does not validate "
+        "Any, so no schema check can reach this. Only str, int, float, bool and "
+        "None may travel, at any depth, in a key or a value; a datetime, a "
+        "filesystem path, a callable, a live handle, a str subclass, a tuple or "
+        "a set may not. A rule reporting a timestamp, a path or an identifier "
+        "should place its STRING form here -- a finding reaches a consumer as "
+        "JSON, so that is what crossing this seam does to the value in any case. "
+        "Which object it was, and where inside the field it sat, are deliberately "
+        "not named: a type name is assignable to any string by whoever wrote the "
+        "object, and a nested key is engine-authored, so echoing either would put "
+        "engine-authored text into a wrapper-authored field."
+    )
+
+
+def _non_inert_fields(finding: Finding) -> list[str]:
+    """The ``Any``-typed fields carrying an object, in ``ANY_TYPED_FIELDS`` order.
+
+    A LIST RATHER THAN A BOOL, so the refusal can name which field rather than
+    only that one exists -- ``_empty_evidence_fields``' shape, for its reason.
+
+    RUN ON A VALIDATED ``Finding``, WHICH IS WHAT MAKES THE ATTRIBUTE WALK SAFE.
+    After stage 2 both components resolve on exact types -- ``Finding`` and
+    ``Applicability``, each a fresh ``model_validate`` result -- so ``getattr``
+    here reaches wrapper-constructed objects and cannot run a property an engine
+    wrote. Before stage 2 it could not be written at all: a ``model_construct``
+    ghost's ``observed_values`` can be a bare ``str`` (measured), and reading
+    attributes off an object of unknown provenance to make a decision is what
+    ADR-9 forbids.
+
+    THE BOUND, STATED RATHER THAN IMPLIED, because a caller must not assume more
+    than this makes true:
+
+      * IT IS A CLAIM ABOUT LEAF TYPES, NOT ABOUT SHAPE. A structure of nothing
+        but dicts and ints that contains ITSELF passes here -- every leaf is
+        inert -- and still raises ``PydanticSerializationError`` on
+        ``model_dump_json``. Measured. Accepting a finding therefore does NOT
+        promise a consumer that it serializes. Refusing a cycle was considered
+        and declined: a cycle carries no behaviour, which is what this gate is
+        about, and pydantic already refuses it loudly at the point of use rather
+        than silently -- which is exactly what a ``Path`` does NOT do, and the
+        reason this gate exists at all.
+      * IT IS A CLAIM ABOUT TYPES, NOT ABOUT MEANING. A wrong-but-inert value is
+        out of scope, as it is for W-8's equivalent.
+      * IT SAYS NOTHING ABOUT STRINGS. A ``str`` is inert and may carry control
+        characters and instruction-shaped prose; Part 4 owns that envelope.
+      * IT COVERS THESE TWO FIELDS AND NEEDS TO COVER NO OTHERS. Every other
+        field on a ``Finding`` is declared with a type pydantic enforces, so
+        stage 2 has already established it.
+    """
+    offending: list[str] = []
+    for path in ANY_TYPED_FIELDS:
+        node: object = finding
+        for component in path:
+            node = getattr(node, component)
+        if _carries_a_non_inert_object(node):
+            offending.append(".".join(path))
+    return offending
+
 
 # --- the evidence gate's field set ------------------------------------------
 #
@@ -151,10 +492,13 @@ def _some_entry_is_present(value: Iterable[str]) -> bool:
 # pairing is the structure, and it replaces a name -> shape lookup that had the
 # exact rot hole such a lookup is built to close: a field added to the field list
 # but forgotten in the shape sets FELL THROUGH to the string rule, and
-# ``list.strip()`` then raised ``AttributeError`` out of stage 3 -- which sits
-# outside both ``try`` blocks, from a function whose docstring promises it never
-# raises. MEASURED, not feared: the AttributeError propagated all the way out of
-# ``validate_finding``.
+# ``list.strip()`` then raised ``AttributeError`` out of the evidence stage --
+# which sits outside both ``try`` blocks, from a function whose docstring promises
+# it never raises. MEASURED, not feared: the AttributeError propagated all the way
+# out of ``validate_finding``. (That stage was numbered 3 when this was written
+# and is numbered 4 since Part 6 inserted the inert-value walk ahead of it; the
+# position outside both guards is what mattered then and still does, which is why
+# the walk is built to be unable to raise rather than guarded.)
 #
 # A ROW CANNOT OMIT ITS RULE. That is the whole point of pairing rather than
 # maintaining two structures held together by a test: the bad state is now
@@ -224,15 +568,39 @@ def validate_finding(
     than one defect at once, and exactly one refusal is emitted, so the order
     below DECIDES WHICH DEFECT IS REPORTED. The order is:
 
-        not a Finding  ->  schema invalid  ->  evidence incomplete
+        not a Finding  ->  schema invalid  ->  non-inert value
+                       ->  evidence incomplete
                        ->  source mismatch  (the caller's, in ``merge``)
 
     THE FIRST THREE ARE SEQUENTIAL PRECONDITIONS rather than a ranking: an object
     that is not a ``Finding`` cannot be schema-checked, and one whose schema
-    cannot be established cannot have its evidence read. There is no choice to
-    make between them; each is simply unreachable until the one before it passes.
+    cannot be established cannot have its values walked or its evidence read.
+    There is no choice to make between them; each is simply unreachable until the
+    one before it passes.
 
-    THE REAL DECISION IS EVIDENCE BEFORE SOURCE, because those two are genuinely
+    NON-INERT BEFORE EVIDENCE IS THE PART 6 DECISION, and it is a genuine ranking
+    rather than a precondition -- both are intrinsic defects on a schema-valid
+    object, either check could run first, and Part 2's intrinsic-before-relational
+    rule (below) cannot separate them because both are intrinsic. WHAT SEPARATES
+    THEM IS WHAT THE RECORD PRESERVES. A ``RejectedFinding`` deliberately never
+    carries the offending object, so its single ``reason`` is the ONLY thing that
+    will ever be known about why this finding did not travel. Report
+    ``evidence_incomplete`` on a finding that ALSO carried a bound method, and the
+    fact that an engine emitted executable state into a wrapper artifact is lost
+    permanently -- nothing else in the system records it. The converse loses only
+    "a field was blank", which the producer's next submission re-reports
+    immediately. The asymmetry is in what survives the refusal, not in which
+    defect is graver.
+
+    AND IT IS EXPLICITLY NOT CLAIMED AS A PRECONDITION FOR THE EVIDENCE GATE,
+    because that would misrepresent Part 2's argument and make this ordering look
+    forced when it was chosen. The evidence gate is already safe on its own terms
+    on any input reaching it: it reads KEYS and never values, and stage 2 has
+    already forced those keys to ``str``. It would be equally safe running before
+    this stage. Nothing here rescues it.
+
+    THE OTHER REAL DECISION IS EVIDENCE BEFORE SOURCE, because those two are
+    genuinely
     simultaneous -- a finding can be both blank and mislabelled, and either check
     could run first. INTRINSIC BEFORE RELATIONAL, and the argument is made here
     rather than inherited from the stage ordering above, which rests on type
@@ -364,7 +732,29 @@ def validate_finding(
             claimed_finding_id=claimed,
         )
 
-    # STAGE 3 -- EVIDENCE COMPLETENESS. Runs on ``validated``, never on
+    # STAGE 3 -- INERT VALUES. The two ``Any``-typed fields are walked for any
+    # object the allow-list does not admit. Like stage 4 it runs on ``validated``
+    # and never on ``candidate``, for the same reason.
+    #
+    # OUTSIDE BOTH GUARDS ABOVE, DELIBERATELY, AND THE WALK IS BUILT TO EARN THAT
+    # POSITION. Wrapping this call in a ``try`` would let a bug of ours be
+    # reported as an engine-supplied object's fault, and would hide exactly the
+    # class of defect Part 2 measured when a dispatch fall-through sent an
+    # ``AttributeError`` out of a function documented never to raise. Instead
+    # ``_carries_a_non_inert_object`` executes nothing belonging to the objects it
+    # inspects and terminates on every input, including a cycle -- see its
+    # docstring for what makes each of those true.
+    non_inert = _non_inert_fields(validated)
+    if non_inert:
+        return RejectedFinding(
+            arrived_on=arrived_on,
+            position=position,
+            reason="non_inert_value",
+            detail=_non_inert_detail(non_inert),
+            claimed_finding_id=validated.finding_id,
+        )
+
+    # STAGE 4 -- EVIDENCE COMPLETENESS. Runs on ``validated``, never on
     # ``candidate``, and the order is what makes it safe to write at all: after
     # stage 2 the declared types are GUARANTEED, so ``inspected`` is a
     # ``list[str]`` and ``observed_values`` is keyed by ``str``, and this gate can
