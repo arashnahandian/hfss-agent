@@ -262,6 +262,32 @@ class FindingReceipt:
     # Indices cost a consumer one dereference into ``accepted`` -- where the id
     # lives anyway -- and keep the untrusted surface exactly where it was.
     #
+    # EXACT-STRING GROUPING ONLY, AND THE BOUND IS NARROWER THAN THE HARM NAMED
+    # ABOVE. Part 5 attacked this and the gap is real, so it is stated here rather
+    # than left for a reader to discover: the harm recorded above is "two accepted
+    # findings a reader cannot tell apart", and two ids can be indistinguishable
+    # to a reader while being distinct strings. Measured, all three accepted with
+    # ``id_collisions == ()``:
+    #
+    #   * ``"rule-a"`` beside ``"rule-a​"`` -- a trailing ZERO WIDTH SPACE.
+    #     The two render identically and are not grouped.
+    #   * an id carrying U+202E RIGHT-TO-LEFT OVERRIDE, which changes how a
+    #     terminal displays it without changing a byte.
+    #   * a Cyrillic homoglyph inside an otherwise-Latin id.
+    #
+    # NOT FIXED BY NORMALIZING, AND THE REASON IS THE ONE ``merge._id_anomalies``
+    # RECORDS AT LENGTH: the identity reported here must be the identity the
+    # PRODUCER emitted, because ``RejectedFinding.position`` and these indices
+    # exist so a caller can correlate what it gets back against what it handed in.
+    # Normalizing before grouping would break that correspondence, and it would
+    # also require this package to own a Unicode confusability policy it has no
+    # source for. ``render.py`` addresses the reader-facing half by framing the
+    # value as data; nothing addresses the "looks the same" half, and no field
+    # here claims to.
+    #
+    # SO A CONSUMER MAY READ THIS AS: these groups share an id EXACTLY. It may not
+    # read an empty tuple as "every accepted finding is distinguishable".
+    #
     # Groups of indices into ``accepted`` that share one non-blank id, in
     # first-occurrence order. Each group holds at least two entries; a lone id is
     # not a collision and is not listed.

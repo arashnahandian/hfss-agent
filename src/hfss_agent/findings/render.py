@@ -160,28 +160,45 @@ _PASSTHROUGH_NOTICE = (
 # THE SPOOFING WARNING, AND WHY IT IS STRONGER HERE THAN AT ITS SOURCE. W-6
 # already states the general fact -- "there is no delimiter safe against
 # arbitrary text, and inventing an escaping scheme would mean rewriting HFSS's
-# output, which this module does not do" -- and the reason is that TAB AND
-# NEWLINE SURVIVE SANITIZATION BY DESIGN: they are real structure in a multi-line
-# solver message, so ``adapter/sanitize`` deliberately keeps them. A delimiter can
+# output, which this module does not do" -- and the reason is that the sanitizer
+# removes only CONTROL characters, keeping tab and newline deliberately because
+# they are real structure in a multi-line solver message. A delimiter can
 # therefore be spoofed by exactly the characters the adapter chose to preserve,
 # which makes the hole a consequence of a correct decision rather than an
 # oversight anyone can close.
 #
-# IT IS STRONGER HERE FOR TWO REASONS, both worth stating rather than inheriting.
-# First, an engine-authored string never passed the sanitizer at all, so it may
-# carry ANY control character -- not merely the two that survive by policy -- and
-# a terminal escape can move a cursor, recolour, or erase, none of which a quote
-# mark contains. Second, this paragraph frames MORE fields than W-6's does, so
-# there is more surface on which a convincing fake entry can be constructed. The
-# honest response is the same one W-6 chose: say plainly that the shape is
-# presentation, and point at what is authoritative instead.
+# THE EARLIER WORDING OF THIS NOTICE SAID "TAB AND NEWLINE SURVIVE SANITIZATION"
+# AS THOUGH THOSE WERE THE ONLY SURVIVORS, AND PART 5 MEASURED THAT IT
+# UNDERSTATES THE HOLE. The strip is by Unicode category ``Cc``, so everything
+# outside that category passes through untouched -- measured: U+2028 LINE
+# SEPARATOR and U+2029 PARAGRAPH SEPARATOR survive AND are treated as line breaks
+# by ``str.splitlines`` and by many renderers, so a single HFSS-sourced name can
+# open a new visual line without containing a newline at all; U+202E RIGHT-TO-LEFT
+# OVERRIDE survives and reorders how a terminal DISPLAYS a line without changing
+# a byte; U+200B ZERO WIDTH SPACE survives and is invisible; and a Cyrillic
+# homoglyph is an ordinary letter to every check in this package. Naming only tab
+# and newline would leave a reader believing the surviving set is two characters
+# wide. It is everything that is not a control character.
+#
+# IT IS STRONGER HERE FOR TWO FURTHER REASONS, both worth stating rather than
+# inheriting. First, an engine-authored string never passed the sanitizer at all,
+# so it may carry ANY control character too -- and a terminal escape can move a
+# cursor, recolour, or erase, none of which a quote mark contains. Second, this
+# paragraph frames MORE fields than W-6's does, so there is more surface on which
+# a convincing fake entry can be constructed. The honest response is the same one
+# W-6 chose: say plainly that the shape is presentation, and point at what is
+# authoritative instead.
 _PRESENTATION_NOTICE = (
     "The numbering, quoting and labelling above are presentation only, not a "
-    "parseable structure, and they can be imitated by the text they contain -- "
-    "tab and newline survive sanitization because they are real structure in a "
-    "solver message, and engine text was never sanitized at all. The "
+    "parseable structure, and they can be imitated by the text they contain. "
+    "Only control characters are removed on read, and only from text that came "
+    "from HFSS: tab and newline are kept deliberately, and invisible, "
+    "direction-changing and look-alike characters are not control characters and "
+    "are kept as well -- some of them start a new line in a renderer or reverse "
+    "how one is displayed. Engine text was never sanitized at all. The "
     "machine-readable answer is the FindingReceipt itself: its accepted and "
-    "rejected collections, and the counts on the first line."
+    "rejected collections, and the counts on the first line of this paragraph, "
+    "which is the one line no entry can precede."
 )
 
 # WHAT CAN HONESTLY BE SAID ABOUT AN ACTION PROPOSAL, AND WHAT CANNOT. This is
@@ -337,6 +354,20 @@ def findings_template_text(receipt: FindingReceipt) -> str:
     # Rendered when any accepted finding carries one. The test is ``is not None``
     # -- a structural question about whether the optional field is set, exactly as
     # above -- and never a question about what the text says.
+    #
+    # A PERVERSE CONSEQUENCE, MEASURED AT PART 5 AND RECORDED RATHER THAN FIXED:
+    # a producer can FORGE an action line inside its own ``template_text``, and
+    # because it never set the field, this notice is absent -- so a forged action
+    # renders WITHOUT the disclaimer that a real one carries. Making the notice
+    # unconditional would not fix it either: it would then describe a proposal
+    # that does not exist on every receipt, which is the "notice describing
+    # nothing" defect the suppression above exists to remove, and a reader who
+    # learns the notices are boilerplate stops reading the one that matters.
+    # There is no framing that survives a producer imitating the frame -- that is
+    # ``_PRESENTATION_NOTICE``'s whole subject, and it IS rendered here. So the
+    # honest position is that the receipt, not the paragraph, says whether an
+    # action was proposed: ``Finding.suggested_action`` is the field, and it is
+    # ``None`` on a forgery.
     if any(finding.suggested_action is not None for finding in accepted):
         parts.append(_SUGGESTED_ACTION_NOTICE)
     if accepted or rejected:

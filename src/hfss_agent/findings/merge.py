@@ -227,9 +227,15 @@ def _id_anomalies(
         ``(collisions, unidentified)`` -- groups of indices sharing one non-blank
         id, and the indices whose id is blank. Blank ids never appear in the first
         (see ``FindingReceipt.unidentified`` for why the absence of a name is not
-        a shared name). "Blank" means blank AFTER WHITESPACE STRIPPING ONLY: an id
-        of control characters is reported as named, which is counter-intuitive and
-        is pinned by a test for that reason.
+        a shared name). "Blank" means blank AFTER WHITESPACE STRIPPING ONLY, and
+        that is narrower than a reader expects: ``str.strip`` removes what Python
+        calls whitespace, so a newline-only id IS blank, while an id of control
+        characters, of U+200B ZERO WIDTH SPACE, or of U+202E RIGHT-TO-LEFT
+        OVERRIDE is reported as NAMED -- all measured at Part 5. Such an id is
+        invisible or misleading to every reader downstream and cannot be spoken,
+        typed, or referred to, yet it is a name as far as this function is
+        concerned. See ``FindingReceipt.id_collisions`` for the matching bound on
+        the grouping half.
     """
     positions_by_id: dict[str, list[int]] = {}
     unidentified: list[int] = []
