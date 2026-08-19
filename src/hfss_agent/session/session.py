@@ -170,10 +170,37 @@ class Session:
     Holds one injected ``Adapter`` for its whole life (tests inject a
     ``FakeAdapter``). The session is the single source of truth for the selection
     chain and drives the adapter so the adapter's own ``_selection`` scoping cache
-    can never diverge from it.
+    does not diverge from it.
+
+    THAT LAST GUARANTEE HOLDS ONLY UNDER SINGLE-THREADED USE, and this paragraph
+    used to claim it "can never diverge", which is measurably false. NOTHING IN
+    THIS CLASS IS THREAD-SAFE. ``_do_select`` reads the adapter's chain, builds a
+    new one, and assigns ``self._state`` — a read-modify-write, mirroring one the
+    adapter performs on its own ``_selection``. Driven from four threads with no
+    lock, 200 rounds produced 20 final chains pairing one caller's project with
+    another caller's design, and 2 rounds in which this class's chain and the
+    adapter's disagreed outright: session ``(project=P6, design=D2)`` against
+    adapter ``(project=P6, design=D6)``. The consequence is the one the product
+    exists to prevent — a read scoped to one design returned under a provenance
+    stamp naming another.
+
+    WHAT UPHOLDS IT NOW, AND WHY THAT IS WEAKER THAN IT SOUNDS. Step 2.8's server
+    layer serializes every tool invocation behind one process-wide ``RLock``
+    (``server/serialization.py``), so no two callers reach this class at once.
+    That makes the precondition true in the shipped product by CONVENTION, NOT BY
+    CONSTRUCTION: the guarantee lives one layer up, in a caller this class knows
+    nothing about, and any future entry point that reaches a ``Session`` without
+    holding that lock reintroduces the divergence with nothing here to stop it.
+    If you are adding such a path, the fix is a lock, not a hope.
+
+    The ``reconnect_guarded`` flag ``_just_verified`` is unsynchronised for the
+    same reason and would tear the same way.
 
     No worker threads live here; the only threads are the adapter watchdog's,
-    already ``daemon=True``.
+    already ``daemon=True``. Note that those are a separate hazard the lock does
+    NOT close: an abandoned watchdog worker can write the adapter's ``_selection``
+    after its caller has moved on, which is what the SUSPECT / re-verify protocol
+    below exists to catch.
     """
 
     def __init__(self, adapter: Adapter) -> None:

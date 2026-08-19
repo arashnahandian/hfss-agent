@@ -23,12 +23,31 @@ threat, different mechanism: an append needs no overwrite guard and must
 never be refused for an existing path — an existing log is the normal case.
 
 ACCEPTED LIMITATIONS — stated, with no machinery built for either:
-  * concurrency: two server instances appending to one log may in principle
-    interleave, and the newline guard's check-then-append window is a TOCTOU
-    resting on the same single-writer assumption. Each append is a single
-    write of a single line, so interleaving is unlikely in practice, but no
-    cross-platform locking is built (msvcrt/fcntl diverge) for an MVP that
-    assumes one server per user.
+  * concurrency: THIS WRITER IS SAFE ONLY FOR A SINGLE WRITER IN A SINGLE
+    THREAD. That is narrower than this paragraph used to claim. It said the
+    hazard was "two server instances appending to one log" — two PROCESSES —
+    and rested the mitigation on "one server per user". Measured, the case that
+    actually loses records is TWO THREADS IN ONE PROCESS, which that mitigation
+    does not reach at all: append-mode open is not atomic on Windows (the CRT
+    seeks to end, then writes) and the newline guard adds a second open,
+    widening the window further.
+
+    The measurement, so the size of it is not left to imagination. 400 records
+    appended from 16 threads: WITHOUT a lock, 395 lines written — 5 records lost
+    and 2 lines torn — while ``torn_tail`` reported False and ``corrupt_lines``
+    was empty, so the log looked complete. WITH the Step 2.8 server-layer lock,
+    400 of 400, nothing lost, nothing torn. Silent loss is precisely the outcome
+    this module's opening paragraph calls "worse than no log, because it looks
+    complete", and neither of the reader's two incompleteness signals can see
+    it: nothing was torn and nothing was corrupt — records simply were not there.
+
+    WHAT MAKES IT SAFE TODAY IS A CALLER, NOT THIS FILE. Every append in
+    ``src/`` happens inside ``Broker.dispatch``, and Step 2.8's server layer
+    serializes every tool invocation behind one process-wide ``RLock``, so
+    dispatches never overlap. No cross-platform locking is built here
+    (msvcrt/fcntl diverge), so a second writer — another process, or any future
+    in-process caller that reaches a ``Broker`` outside that lock — reintroduces
+    the loss with nothing in this module to prevent it.
   * rotation: none, ever. Growth is bounded by human-rate usage; read-side
     cost is handled by the range limit; and rotation would sit awkwardly
     against "append-only".
