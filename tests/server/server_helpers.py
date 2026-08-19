@@ -10,9 +10,18 @@ Two composition shapes, deliberately different:
   * ``real_writer_composition`` uses the production ``build_composition`` with a
     real ``AuditLogWriter`` under ``tmp_path``. The audit-integrity test needs
     the real writer, because the defect it measures is IN that writer.
+
+``composed_app`` is the third and is the one the completeness proof uses: the
+production composition AND the production ``build_app``, with the tool names read
+back off the server the way a client reads them. Nothing about the surface is
+written down here -- that is the entire point, since a helper that returned a
+hand-written list would make the completeness test compare a list to itself.
 """
 
 from __future__ import annotations
+
+import asyncio
+from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
@@ -25,7 +34,8 @@ from hfss_agent.broker import (
 )
 from hfss_agent.contract import AuditRecord
 from hfss_agent.preflight import VersionRead
-from hfss_agent.server import build_composition, serialized
+from hfss_agent.server import FAKE, Composition, build_composition, serialized
+from hfss_agent.server.app import build_app
 from hfss_agent.session import Session
 
 DEFAULT_PID = 4242
@@ -117,3 +127,29 @@ def mismatched(session: Session) -> bool:
     if chain.project is None or chain.design is None:
         return False
     return chain.project.name[1:] != chain.design[1:]
+
+
+def registered_tool_names(app: MCPServer) -> set[str]:
+    """The tool names a CLIENT would see, read off the server.
+
+    Goes through ``list_tools()`` rather than the private ``_tool_manager``
+    because that is the call a client actually makes; the completeness suite
+    separately pins that the two agree.
+    """
+    return {tool.name for tool in asyncio.run(app.list_tools())}
+
+
+def composed_app(
+    tmp_path: Path, *, want_app: bool = False
+) -> tuple[Composition | MCPServer, set[str]]:
+    """The production composition and app over a ``FakeAdapter``, plus the tool
+    names read back off it.
+
+    Returns the ``Composition`` by default because most completeness checks need
+    the registry; ``want_app=True`` returns the ``MCPServer`` for the two checks
+    that interrogate the server object itself. One helper rather than two so
+    every caller is provably looking at the SAME server the names came from.
+    """
+    composition = build_composition(FakeAdapter(), data_dir=str(tmp_path))
+    app = build_app(composition, adapter_kind=FAKE)
+    return (app if want_app else composition), registered_tool_names(app)

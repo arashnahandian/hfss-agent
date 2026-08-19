@@ -39,6 +39,21 @@ already made -- at composition -- and keeps the handler a call and a return.
 EVERY TOOL IS WRAPPED IN ``serialized`` and every tool has a row in
 ``tool_surface`` declaring its risk tier. Two reflection tests enforce both, with
 no exemption list on either.
+
+A WIRE-SHAPE ASYMMETRY THE RETURN ANNOTATIONS DO NOT REVEAL, recorded because it
+is invisible from this file and will trip the next person who asserts against a
+tool's output. The SDK derives each tool's structured content from its return
+annotation, and it treats a UNION return differently from a single model:
+
+    attach              -> AttachResult (a union)  -> {"result": {...}}
+    get_session_status  -> SessionStatus (a model) -> {"connection_health": ..., ...}
+
+So roughly half this surface nests its payload under ``result`` and half is flat,
+purely according to whether the contract type is a union. That is the SDK's
+behaviour, not a choice made here, and absorbing it is correct -- inventing a
+uniform envelope would mean this layer reshaping a response, which is exactly
+what it must not do. But a test (or a consumer) reading ``structured_content``
+has to handle both shapes, and nothing in the signatures below says so.
 """
 
 from __future__ import annotations
