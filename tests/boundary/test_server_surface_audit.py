@@ -1,8 +1,9 @@
-"""Four structural audits over ``src/`` that guard W-1's shape rather than its
-behaviour: where tools may be registered, what an assembler actually dispatches,
-what may reach stdout, and which transport may be named.
+"""Five structural audits over ``src/`` that guard W-1's shape rather than its
+behaviour: where tools may be registered, how many servers may exist to register
+them on, what an assembler actually dispatches, what may reach stdout, and which
+transport may be named.
 
-ALL FOUR ARE AST WALKS, NEVER TEXT SEARCHES, and one of them proves why that
+ALL FIVE ARE AST WALKS, NEVER TEXT SEARCHES, and one of them proves why that
 matters: ``server/serialization.py`` contains the literal text
 ``@server.tool(name="...", description="...")`` inside a docstring, as the usage
 example for the decorator. A grep-based registration audit would report that
@@ -102,6 +103,126 @@ def test_the_registration_detector_sees_both_shapes() -> None:
     assert not _registers_a_tool(ast.parse("x = 1\n"))
     # The docstring case that a grep would get wrong.
     assert not _registers_a_tool(ast.parse('"""@server.tool(name=\'x\')"""\n'))
+
+
+# --- and the single SERVER-CONSTRUCTION site ---------------------------------
+#
+# THE RESIDUE THE AUDIT ABOVE LEAVES, closed here. "Exactly one file registers
+# tools" is NOT "exactly one server exists to register them on", and the gap is
+# reachable: a second entry point could build its own ``MCPServer`` and register
+# onto that. Every guard in ``tests/server/test_completeness.py`` and
+# ``tests/prohibited_ops/test_mcp_tier_surface.py`` calls ``build_app`` and reads
+# the server IT returns, so all of them would stay green while a client spawning
+# the other entry point was offered a different surface -- one with no
+# ``_describe`` lookup behind it, therefore no ``TOOL_SURFACE`` row, therefore no
+# declared tier. The registration audit above cannot notice: the registrations
+# would still be in ``app.py``, just onto a different object.
+#
+# COUNTS CALL SITES, NOT FILES, and the difference is not pedantry. A per-file
+# check was written first and MEASURED not to fire against a second ``MCPServer``
+# built inside ``app.py`` itself -- which is the likeliest place a second one
+# actually appears, since that is where the SDK class is already imported. The
+# unit that matters is the construction, so the audit reports ``file:line``.
+#
+# WHAT THIS WALK SEES: a call to the name ``MCPServer``, however it is locally
+# bound -- ``from mcp.server.mcpserver import MCPServer as Srv`` then
+# ``Srv(...)`` is resolved through the import -- and a call to
+# ``<anything>.MCPServer(...)``.
+#
+# WHAT IT CANNOT SEE, stated rather than left to be discovered: a construction
+# through a value computed at runtime (``getattr(module, "MCPServer")()``, the
+# class held in a dict or returned by a factory), and a single call site reached
+# twice at runtime (``build_app`` called by two entry points). No such shape
+# exists in ``src/`` today, and the second is harmless anyway -- two apps built
+# by the same code have the same surface. The honest claim is "the direct
+# construction shapes appear at exactly one place in src/", not "no server can
+# be built anywhere else".
+
+_SERVER_CLASS = "MCPServer"
+
+
+def _server_class_aliases(tree: ast.Module) -> set[str]:
+    """Every local name bound to the SDK's server class in this module.
+
+    Without this, ``import MCPServer as Srv`` followed by ``Srv(...)`` would be
+    invisible to the walk below -- a one-line rename defeating the audit.
+    """
+    aliases = {_SERVER_CLASS}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == _SERVER_CLASS and alias.asname:
+                    aliases.add(alias.asname)
+    return aliases
+
+
+def _server_construction_lines(tree: ast.Module) -> list[int]:
+    """Line numbers at which this module CONSTRUCTS an ``MCPServer``.
+
+    An annotation is not a construction: ``def f(app: MCPServer) -> MCPServer``
+    names the class without building one, and only ``ast.Call`` nodes are
+    consulted, so annotations do not register.
+    """
+    aliases = _server_class_aliases(tree)
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (isinstance(func, ast.Name) and func.id in aliases) or (
+            isinstance(func, ast.Attribute) and func.attr == _SERVER_CLASS
+        ):
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+def test_exactly_one_place_in_src_constructs_a_server() -> None:
+    """THE OTHER HALF OF "``build_app`` IS THE WHOLE SURFACE".
+
+    The registration audit proves tools are registered in one file. This proves
+    there is one SERVER for them to be registered on, so the object every
+    completeness and tier guard inspects is the object a client is served.
+
+    The expected site is asserted as a ``file:line`` pair, so moving the
+    construction is a visible edit to this line rather than a silent one.
+    """
+    builders = sorted(
+        f"{path.relative_to(_SRC).as_posix()}:{line}"
+        for path in _sources(_SRC)
+        for line in _server_construction_lines(_tree(path))
+    )
+    assert len(builders) == 1 and builders[0].startswith("server/app.py:"), (
+        f"MCPServer constructed at {builders}; exactly one place may build a "
+        "server, and it must be in server/app.py -- every completeness and tier "
+        "guard reads the surface of the server build_app returns, and a second "
+        "server would carry tools none of them can see."
+    )
+
+
+def test_the_server_construction_detector_sees_the_shapes_it_claims() -> None:
+    """Positive limb: a detector that matched nothing would make the audit above
+    pass vacuously and permanently, which is how a guard rots into decoration."""
+    assert _server_construction_lines(ast.parse("s = MCPServer(name='x')\n")) == [1]
+    assert _server_construction_lines(ast.parse("s = mcpserver.MCPServer()\n")) == [1]
+    assert _server_construction_lines(
+        ast.parse("from mcp.server.mcpserver import MCPServer as Srv\ns = Srv()\n")
+    ) == [2]
+    # Two constructions in ONE file are two findings, which is the measured gap
+    # a per-file check had.
+    assert _server_construction_lines(
+        ast.parse("a = MCPServer()\nb = MCPServer()\n")
+    ) == [1, 2]
+    assert _server_construction_lines(ast.parse("x = 1\n")) == []
+    # Naming the type is not building one -- ``server_helpers`` and ``app`` both
+    # annotate with it, and an audit that counted annotations would be wrong
+    # about which files build a server.
+    assert _server_construction_lines(
+        ast.parse("def f(app: MCPServer) -> MCPServer: ...\n")
+    ) == []
+    # Prose, again: three server docstrings discuss ``MCPServer`` by name.
+    assert _server_construction_lines(
+        ast.parse('"""Registered onto MCPServer."""\n')
+    ) == []
 
 
 # =============================================================================
@@ -268,20 +389,22 @@ def _stdout_writes_at_import(tree: ast.Module) -> list[str]:
     return offenders
 
 
-_IMPORTABLE_PACKAGES = (
-    "adapter",
-    "broker",
-    "contract",
-    "findings",
-    "gating",
-    "inspect",
-    "metrics",
-    "preflight",
-    "server",
-    "session",
-    "snapshot",
-    "validate_native",
-)
+# THE FILE SET, STATED RATHER THAN DERIVED: every ``*.py`` under
+# ``src/hfss_agent``, at every depth, package ``__init__.py`` files included.
+#
+# It used to be a hand-written tuple of the twelve SUBPACKAGE names, walked as
+# ``_SRC / package``. That set has a hole exactly where it matters most:
+# ``src/hfss_agent/__init__.py`` sits above all twelve and was never walked,
+# so a bare ``print()`` in the FIRST module a server process imports was
+# invisible to the one audit that exists to catch it. Measured: planted there,
+# every boundary test stayed green. A hand-written membership list is also the
+# thing a thirteenth package would silently fall out of, so the list is gone
+# rather than extended by one entry.
+
+
+def _stdout_audited_sources() -> list[Path]:
+    """Every source this audit examines. Whole tree, no exemptions."""
+    return _sources(_SRC)
 
 
 def test_no_module_writes_to_stdout_at_import_time() -> None:
@@ -300,16 +423,49 @@ def test_no_module_writes_to_stdout_at_import_time() -> None:
     reached on every single start.
     """
     offenders = {}
-    for package in _IMPORTABLE_PACKAGES:
-        for path in _sources(_SRC / package):
-            found = _stdout_writes_at_import(_tree(path))
-            if found:
-                offenders[str(path.relative_to(_SRC))] = found
+    for path in _stdout_audited_sources():
+        found = _stdout_writes_at_import(_tree(path))
+        if found:
+            # ``as_posix`` so a failure reads the same on both CI legs.
+            offenders[path.relative_to(_SRC).as_posix()] = found
     assert not offenders, (
         f"import-time stdout writes: {offenders}. Under stdio transport these "
         "land ahead of the first JSON-RPC frame and the client sees a protocol "
         "error. Route diagnostics to stderr."
     )
+
+
+def test_the_stdout_audit_covers_the_package_root_not_just_subpackages() -> None:
+    """THE FLOOR THE OLD FILE SET FAILED.
+
+    ``src/hfss_agent/__init__.py`` is the first module a server process
+    imports, so it is the worst possible place for an unguarded module-level
+    ``print`` and the first place this audit must look. It was outside the
+    walked set until Part 10. This pins the file set rather than the outcome:
+    a future refactor that narrows the walk fails HERE, naming the omission,
+    instead of leaving the audit quietly blind.
+    """
+    audited = {path.relative_to(_SRC).as_posix() for path in _stdout_audited_sources()}
+    assert "__init__.py" in audited, (
+        "the package root is outside the stdout audit's file set"
+    )
+    # And every subpackage root, since those were the old set and must not be
+    # lost in the other direction.
+    for package in (
+        "adapter",
+        "broker",
+        "contract",
+        "findings",
+        "gating",
+        "inspect",
+        "metrics",
+        "preflight",
+        "server",
+        "session",
+        "snapshot",
+        "validate_native",
+    ):
+        assert f"{package}/__init__.py" in audited, package
 
 
 def test_stderr_directed_print_is_permitted() -> None:

@@ -36,6 +36,15 @@ Deriving either would be this layer deciding something: which probes count, or
 what the tool surface is. Passing them through keeps the decision where it was
 already made -- at composition -- and keeps the handler a call and a return.
 
+THE SAME RULE APPLIES TO THE HANDSHAKE VERSION, and it took a second reader to
+notice. This module briefly carried its own ``importlib.metadata`` lookup for
+the server version -- a value ``preflight.probes`` already owns. The two agreed
+on a healthy install and diverged on every failure: different placeholders for
+a missing distribution, ``None`` where the probe gives a string, and an
+UNCAUGHT EXCEPTION -- a server that would not start -- where the probe returns
+the placeholder. The version now comes from ``REAL_PROBES`` like everything
+else about the environment.
+
 EVERY TOOL IS WRAPPED IN ``serialized`` and every tool has a row in
 ``tool_surface`` declaring its risk tier. Two reflection tests enforce both, with
 no exemption list on either.
@@ -165,7 +174,15 @@ def build_app(composition: Composition, *, adapter_kind: str) -> MCPServer:
     simulated = adapter_kind == FAKE
     server = MCPServer(
         name=_SERVER_NAME + (_FAKE_NAME_SUFFIX if simulated else ""),
-        version=_wrapper_version(),
+        # READ THROUGH THE PROBE, not by a local ``importlib.metadata``
+        # call. W-11 already owns "what version is this package" and keeps
+        # a three-state read behind it, so a damaged or version-less
+        # ``.dist-info`` yields the established ``0.0.0`` placeholder
+        # instead of ``None`` or an exception that would take the whole
+        # server down at startup. A second reader here was measured to do
+        # both, and to disagree with the ``wrapper_version`` that
+        # ``preflight_environment`` reports in the same session.
+        version=REAL_PROBES.wrapper_version(),
         instructions=_FAKE_INSTRUCTIONS if simulated else _LIVE_INSTRUCTIONS,
     )
     broker = composition.broker
@@ -298,23 +315,6 @@ def build_app(composition: Composition, *, adapter_kind: str) -> MCPServer:
         )
 
     return server
-
-
-def _wrapper_version() -> str:
-    """This package's version, or a truthful placeholder when it cannot be read.
-
-    Deliberately does NOT fabricate a plausible version on failure. A made-up
-    number reported to a client as the server version is exactly the class of
-    quiet lie this repo refuses elsewhere -- ``preflight`` keeps "absent" and
-    "unreadable" distinct for the same reason. The literal string below cannot
-    be mistaken for a real version.
-    """
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return version("hfss-agent")
-    except PackageNotFoundError:
-        return "0.0.0+unknown"
 
 
 __all__ = ["build_app"]

@@ -3,14 +3,22 @@
 THIS TESTS A DISCLOSURE, NOT A GUARD, and the distinction is the point. The
 disclosure is delivered once, at initialize, and the host may render it,
 summarise it, or ignore it. It changes nothing downstream: the values a
-simulated session returns are not marked and are not detectable. The last test
-in this file pins that hole open on purpose, so nobody later reads the presence
-of a disclosure as evidence that simulated data is identifiable.
+simulated session returns are not marked and are not detectable.
+``test_a_fake_backed_response_is_still_indistinguishable`` pins that hole open
+on purpose, so nobody later reads the presence of a disclosure as evidence
+that simulated data is identifiable -- and
+``test_the_tell_check_finds_a_tell_where_one_exists`` is its companion limb,
+because an absence assertion with no demonstration that the check can FIND the
+thing is an assertion that cannot fail.
 """
 
 from __future__ import annotations
 
+import json
 import tempfile
+from pathlib import Path
+
+from server_helpers import DEFAULT_PID, composed_app, drive_client
 
 from hfss_agent.adapter.fake import FakeAdapter
 from hfss_agent.server import FAKE, LIVE, build_composition
@@ -51,14 +59,43 @@ def test_the_fake_instructions_admit_their_own_limits() -> None:
     assert "no marker" in text
 
 
+# WHAT THE OVERCLAIM CHECK IS, STATED SO IT IS NOT MISTAKEN FOR MORE. This is
+# a FOUR-WORD BLOCKLIST STANDING IN FOR A CLAIM ABOUT MEANING, not a proof of
+# it. "Reliable", "trustworthy", "validated" and "authoritative" would all
+# pass it while making exactly the warranty the live wording must not make.
+# It is kept because these four are the words a draft actually reaches for,
+# and a cheap tripwire on the likely wording beats no tripwire at all -- but
+# a reviewer reading new instructions text is still the guard, and this is
+# not a substitute for that.
+_OVERCLAIMS = ("verified", "accurate", "guaranteed", "correct")
+
+
+def _overclaims_in(text: str) -> list[str]:
+    return [word for word in _OVERCLAIMS if word in text.lower()]
+
+
 def test_the_live_instructions_claim_no_more_than_the_connection() -> None:
     """Live wording must not read as a correctness warranty -- it describes what
     is connected, not that the answers are right."""
     text = _app(LIVE).instructions or ""
     assert "attach-only" in text
     assert "SIMULATED" not in text
-    for overclaim in ("verified", "accurate", "guaranteed", "correct"):
-        assert overclaim not in text.lower()
+    assert _overclaims_in(text) == []
+
+
+def test_the_overclaim_check_finds_an_overclaim_when_there_is_one() -> None:
+    """THE COMPANION LIMB the standing rule requires for any "X appears
+    nowhere" assertion: the same check, shown FINDING X where X exists.
+
+    Without this, a detector that had stopped matching -- a case change, a
+    typo in the word list, a lowercasing that went missing -- would leave the
+    assertion above permanently and silently green.
+    """
+    assert _overclaims_in("Every value is GUARANTEED accurate.") == [
+        "accurate",
+        "guaranteed",
+    ]
+    assert _overclaims_in("Values are read from that session.") == []
 
 
 def test_the_two_modes_differ_in_both_name_and_instructions() -> None:
@@ -67,33 +104,125 @@ def test_the_two_modes_differ_in_both_name_and_instructions() -> None:
     assert fake.instructions != live.instructions
 
 
-def test_a_fake_backed_response_is_still_indistinguishable() -> None:
-    """THE HOLE, PINNED OPEN DELIBERATELY.
+# The words that would betray a simulated backend if one of them leaked into a
+# value. Deliberately broad -- "test" included -- because the claim being
+# checked is broad: that NOTHING marks a response.
+_TELLS = ("fake", "simulated", "canned", "mock", "test")
 
-    This asserts the CURRENT, KNOWN-BAD property: nothing in a tool response
-    reveals the adapter. It is not an endorsement -- it is a tripwire. If a
-    later change makes responses self-identifying, this test fails and whoever
-    made that change must come here, read why the disclosure was worded as it
-    was, and update the wording to match the new, better reality.
 
-    Without this, the disclosure text and the actual detectability could drift
-    apart silently, which is the exact defect the wording exists to avoid.
+def _tells_in(text: str) -> list[str]:
+    lowered = text.lower()
+    return [tell for tell in _TELLS if tell in lowered]
+
+
+# Responses that echo a CALLER-SUPPLIED PATH are excluded below, and the
+# exclusion is about the test harness rather than the property: under pytest a
+# tmp_path contains "pytest-of-<user>/test_<name>", so ``get_audit_log`` (whose
+# records carry the arguments) and ``export_diagnostics_bundle`` (whose result
+# carries the path) would report a "test" tell that came from the test's own
+# directory name, not from the adapter. Every tool that returns ADAPTER-DERIVED
+# data is driven.
+_TELL_PROBE_CALLS = (
+    ("attach", {"process_id": DEFAULT_PID}),
+    ("list_selection_options", {"stage": "project"}),
+    ("select", {"stage": "project", "choice": "patch_antenna"}),
+    ("select", {"stage": "design", "choice": "HFSSDesign1"}),
+    ("select", {"stage": "setup", "choice": "Setup1"}),
+    ("select", {"stage": "sweep", "choice": "Sweep1"}),
+    ("select", {"stage": "variation", "choice": "sha256:defaultvariation"}),
+    ("get_session_status", {}),
+    ("inspect_design", {}),
+    ("preflight_environment", {}),
+    ("get_design_intent", {}),
+)
+
+
+def test_a_fake_backed_response_is_still_indistinguishable(tmp_path: Path) -> None:
+    """THE HOLE, PINNED OPEN DELIBERATELY -- and now actually read off
+    RESPONSES.
+
+    This test was named for responses and its docstring claimed "nothing in a
+    tool response reveals the adapter", while its body called
+    ``broker.require_environment()`` and inspected four fields of one object.
+    No tool was invoked. It now drives eleven real calls over a client session
+    and searches the structured content each one returns.
+
+    It asserts the CURRENT, KNOWN-BAD property: nothing in a tool response
+    reveals the adapter. That is not an endorsement -- it is a tripwire. If a
+    later change makes responses self-identifying, this fails and whoever made
+    that change must come here, read why the disclosure was worded as it was,
+    and update the wording to match the new, better reality.
+
+    UPDATE THIS ALONGSIDE THE DISCLOSURE TEXT. The fake instructions in
+    ``app.py`` are being corrected separately: they currently claim that
+    "every value it returns ... is canned test data", which is false for
+    ``preflight_environment`` (real host python and wrapper versions, real
+    support-matrix verdicts) and for ``get_audit_log`` (real timestamps and
+    call history). When that sentence is fixed, the disclosure's claims about
+    what responses carry change, and this test is the check that has to agree
+    with them -- so read both together rather than either alone.
+    """
+    app, _ = composed_app(tmp_path, want_app=True)
+
+    async def work(session, _init):
+        seen = {}
+        for name, arguments in _TELL_PROBE_CALLS:
+            result = await session.call_tool(name, arguments)
+            assert result.is_error is False, f"{name} errored: {result.content}"
+            seen[name] = json.dumps(result.structured_content, default=str)
+        return seen
+
+    responses = drive_client(app, work)
+    assert len(responses) == len({name for name, _ in _TELL_PROBE_CALLS})
+    betrayed = {
+        name: _tells_in(body)
+        for name, body in responses.items()
+        if _tells_in(body)
+    }
+    assert not betrayed, (
+        f"a fake-backed response now identifies itself: {betrayed}. If responses "
+        "have become self-identifying, update the disclosure in server/app.py "
+        "-- it currently states, in as many words, that they are not."
+    )
+
+
+def test_the_tell_check_finds_a_tell_where_one_exists() -> None:
+    """THE COMPANION LIMB. The same check, shown FINDING a tell.
+
+    ``app.name`` is the ready example and the honest one: the server name IS
+    marked -- ``"hfss-agent (SIMULATED)"`` -- so the detector applied to it
+    must fire. If it does not, the absence assertion above is proving nothing
+    and would stay green through any change.
+
+    Worth noticing while you are here: that the NAME is marked while responses
+    are not is the whole shape of this disclosure. The name is the one signal
+    a client carries forward without being asked to.
+    """
+    assert _tells_in(_app(FAKE).name) == ["simulated"]
+    assert _tells_in(_app(LIVE).name) == []
+    # And on a response-shaped payload, so the limb covers the same kind of
+    # input the absence check reads.
+    marked = json.dumps({"environment": {"aedt_version": "2026.1 (fake)"}})
+    assert _tells_in(marked) == ["fake"]
+
+
+def test_the_attached_environment_carries_no_tell_either() -> None:
+    """The original four-field check, KEPT rather than replaced.
+
+    ``Environment`` is the one object whose SHAPE the disclosure names -- it
+    says a response's "environment versions are indistinguishable from a live
+    session's" -- so pinning its field set is a separate, narrower guarantee
+    than the response sweep above: a NEW field appearing here is a change to
+    what the disclosure is talking about.
     """
     composition = build_composition(FakeAdapter(), data_dir=tempfile.mkdtemp())
-    composition.session.attach(4242)
-    environment = composition.broker.require_environment()
-
-    fields = environment.model_dump()
+    composition.session.attach(DEFAULT_PID)
+    fields = composition.broker.require_environment().model_dump()
     assert set(fields) == {
         "aedt_version",
         "pyaedt_version",
         "python_version",
         "wrapper_version",
     }
-    blob = " ".join(str(value) for value in fields.values()).lower()
-    for tell in ("fake", "simulated", "canned", "mock", "test"):
-        assert tell not in blob, (
-            f"{tell!r} now appears in a fake-backed Environment. If responses "
-            "have become self-identifying, update the disclosure in "
-            "server/app.py -- it currently states that they are not."
-        )
+    blob = " ".join(str(value) for value in fields.values())
+    assert _tells_in(blob) == []

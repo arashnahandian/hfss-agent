@@ -17,8 +17,17 @@ so it legitimately imports more than any other module in the repo: the nine
 feature grants plus ``mcp``. The compensation is the two FILE-SCOPED exceptions
 below. A package-wide permission for ``hfss_agent.adapter`` would let a tool
 handler reach the adapter directly, which is the one thing Layer 7 must never
-do; scoping it to two files makes ``app.py`` and ``__main__.py`` STRUCTURALLY
-unable to.
+do; scoping it to two files makes every other file in the package
+STRUCTURALLY unable to.
+
+THE SCOPING IS BY PATH RELATIVE TO ``server/``, NOT BY BASENAME, and the
+difference was measured rather than reasoned about. Keyed on ``path.name``,
+a NEW FILE at ``server/handlers/composition.py`` inherited both exceptions --
+the walk uses ``rglob`` so it was seen, it just could not be told apart from
+the real ``composition.py`` -- and imported ``FakeAdapter`` and the
+directory-creating ``locations`` module with every audit green. The permitted
+sets below therefore hold posix RELATIVE PATHS; for today's flat package they
+read identically to filenames, which is exactly why the defect was invisible.
 
 WHAT THIS AUDIT DOES NOT COVER, so a green run is not over-read: it constrains
 what ``server`` imports, not what imports ``server``. "Nothing below Layer 7
@@ -70,8 +79,14 @@ _LAYER_7_GRANT = (
 #     because the SDK derives each tool's input schema from the wrapped
 #     signature.
 #   * ``threading`` -- the process-wide dispatch RLock.
-#   * ``importlib.metadata`` -- reading this package's own version for the
-#     handshake, rather than hardcoding it.
+#
+# REMOVED IN PART 10, recorded because the removal is the interesting part:
+# ``importlib.metadata`` was permitted for "reading this package's own
+# version for the handshake". That read was a SECOND implementation of
+# ``preflight.probes.real_wrapper_version``, and the two disagreed on every
+# failure mode (see app.py). The handshake version now comes from
+# ``REAL_PROBES``, so nothing here imports it -- and the live-use check below
+# is what noticed, which is the whole reason that check exists.
 _ALLOWED_IMPORT_ROOTS = (
     *_LAYER_7_GRANT,
     "hfss_agent.server",
@@ -82,7 +97,6 @@ _ALLOWED_IMPORT_ROOTS = (
     "collections.abc",
     "dataclasses",
     "functools",
-    "importlib.metadata",
     "sys",
     "threading",
     "typing",
@@ -121,6 +135,8 @@ _CONSIDERED_AND_REFUSED = (
 # session wraps, and the composition root is the only layer that knows which one
 # this process should get. Confined to the two files that do that work, so a
 # tool handler cannot reach an adapter even by accident.
+# Posix paths relative to ``server/`` -- see the module docstring on why not
+# basenames.
 _ADAPTER_PERMITTED_IN = frozenset({"adapter_selection.py", "composition.py"})
 
 # EXCEPTION 2: ``hfss_agent.broker.files.locations``, in composition.py only.
@@ -136,7 +152,7 @@ _ADAPTER_PERMITTED_IN = frozenset({"adapter_selection.py", "composition.py"})
 # path, and makes the reach a reviewed entry here rather than an invisible
 # convenience.
 _LOCATIONS_MODULE = "hfss_agent.broker.files.locations"
-_LOCATIONS_PERMITTED_IN = frozenset({"composition.py"})
+_LOCATIONS_PERMITTED_IN = frozenset({"composition.py"})  # relative to server/
 
 
 def _under(module: str, root: str) -> bool:
@@ -144,7 +160,24 @@ def _under(module: str, root: str) -> bool:
 
 
 def _imported_modules(source: str) -> list[str]:
-    """Every module named by an import in ``source``, in its own spelling.
+    """Every module an import NAMES, plus the dotted path each imported name
+    would resolve to as a submodule -- both, in their own spelling.
+
+    WHY BOTH, AND IT IS THE HALF THAT WAS MISSING. ``from X import Y`` used to
+    be reported as ``X`` alone, so ``from hfss_agent.broker.files import
+    locations`` came back as ``hfss_agent.broker.files`` -- which is NOT under
+    ``hfss_agent.broker.files.locations`` and IS under the broad
+    ``hfss_agent.broker`` grant, so the locations exception was bypassed
+    entirely. Measured: planted in ``app.py``, every boundary test stayed
+    green. Reporting ``X.Y`` as well is what lets a deep module be scoped no
+    matter which spelling reaches it.
+
+    The cost is that a CLASS or function name also appears as a dotted path --
+    ``from hfss_agent.broker import Broker`` yields ``hfss_agent.broker`` and
+    ``hfss_agent.broker.Broker``. That is deliberate and harmless: this
+    function cannot tell a submodule from an attribute without importing, and
+    an extra name under an already-permitted root changes no verdict. It only
+    ever ADDS a candidate for a scoping rule to catch.
 
     A RELATIVE IMPORT IS REPORTED IN ITS SOURCE SPELLING AND IS THEREBY REFUSED:
     ``from ..broker import Broker`` comes back as ``"..broker"`` and ``from .
@@ -162,8 +195,23 @@ def _imported_modules(source: str) -> list[str]:
         if isinstance(node, ast.Import):
             modules += [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
-            modules.append("." * node.level + (node.module or ""))
+            base = "." * node.level + (node.module or "")
+            modules.append(base)
+            # ``from . import x`` gives a base of ``"."``; joining with
+            # another dot would spell ``"..x"``, a DIFFERENT relative depth.
+            separator = "" if base.endswith(".") else "."
+            modules += [base + separator + alias.name for alias in node.names]
     return modules
+
+
+def _relative(path: Path) -> str:
+    """A server source's identity for scoping: posix, relative to ``server/``.
+
+    ``as_posix`` because CI runs on Ubuntu as well as Windows and a raw
+    ``str(PurePath)`` yields backslashes on one of them, so a permitted-set
+    membership test would pass on Linux and fail on Windows.
+    """
+    return path.relative_to(_SERVER).as_posix()
 
 
 def _server_sources() -> list[Path]:
@@ -172,16 +220,21 @@ def _server_sources() -> list[Path]:
     return files
 
 
-def _offenders_for(source: str, filename: str) -> list[str]:
-    """Imports in ``source`` that this file is not permitted to make."""
+def _offenders_for(source: str, relative_path: str) -> list[str]:
+    """Imports in ``source`` that this file is not permitted to make.
+
+    ``relative_path`` is the file's posix path RELATIVE TO ``server/``, not
+    its basename: a subdirectory must not inherit a file-scoped exception by
+    reusing a permitted name.
+    """
     bad = []
     for module in _imported_modules(source):
         if _under(module, "hfss_agent.adapter"):
-            if filename not in _ADAPTER_PERMITTED_IN:
+            if relative_path not in _ADAPTER_PERMITTED_IN:
                 bad.append(module)
             continue
         if _under(module, _LOCATIONS_MODULE):
-            if filename not in _LOCATIONS_PERMITTED_IN:
+            if relative_path not in _LOCATIONS_PERMITTED_IN:
                 bad.append(module)
             continue
         if not any(_under(module, root) for root in _ALLOWED_IMPORT_ROOTS):
@@ -193,9 +246,10 @@ def test_server_imports_only_the_allowed_roots() -> None:
     """READ THE PER-FILE ROWS, NOT JUST THE VERDICT."""
     offenders = {}
     for path in _server_sources():
-        bad = _offenders_for(path.read_text(encoding="utf-8"), path.name)
+        relative = _relative(path)
+        bad = _offenders_for(path.read_text(encoding="utf-8"), relative)
         if bad:
-            offenders[path.name] = sorted(set(bad))
+            offenders[relative] = sorted(set(bad))
     assert not offenders, (
         f"server imported modules outside the Layer-7 allow-list: {offenders}. "
         "Add the root above WITH ITS REASON, or route through a module that "
@@ -213,7 +267,8 @@ def test_the_adapter_exception_is_file_scoped_not_package_wide() -> None:
     """
     reaching = {}
     for path in _server_sources():
-        if path.name in _ADAPTER_PERMITTED_IN:
+        relative = _relative(path)
+        if relative in _ADAPTER_PERMITTED_IN:
             continue
         found = [
             module
@@ -221,7 +276,7 @@ def test_the_adapter_exception_is_file_scoped_not_package_wide() -> None:
             if _under(module, "hfss_agent.adapter")
         ]
         if found:
-            reaching[path.name] = sorted(found)
+            reaching[relative] = sorted(found)
     assert not reaching, f"adapter reached outside its two permitted files: {reaching}"
 
 
@@ -244,7 +299,8 @@ def test_the_permitted_files_actually_use_their_exceptions() -> None:
 def test_the_locations_exception_is_confined_to_composition() -> None:
     reaching = {}
     for path in _server_sources():
-        if path.name in _LOCATIONS_PERMITTED_IN:
+        relative = _relative(path)
+        if relative in _LOCATIONS_PERMITTED_IN:
             continue
         found = [
             m
@@ -252,7 +308,7 @@ def test_the_locations_exception_is_confined_to_composition() -> None:
             if _under(m, _LOCATIONS_MODULE)
         ]
         if found:
-            reaching[path.name] = sorted(found)
+            reaching[relative] = sorted(found)
     assert not reaching, (
         f"broker.files.locations reached outside composition: {reaching}"
     )
@@ -290,11 +346,27 @@ def test_the_detector_refuses_a_relative_import() -> None:
     filter that made planted relative imports invisible; this proves the fix is
     present here rather than assuming it was inherited."""
     planted = "from ..adapter.fake import FakeAdapter\n"
-    assert _imported_modules(planted) == ["..adapter.fake"]
-    assert _offenders_for(planted, "app.py") == ["..adapter.fake"]
-    # And ``from . import x`` -- the shape with no module name at all.
-    assert _imported_modules("from . import composition\n") == ["."]
-    assert _offenders_for("from . import composition\n", "composition.py") == ["."]
+    # Both spellings are reported (see ``_imported_modules``), and neither is
+    # under any allowed root, so both are refused.
+    assert _imported_modules(planted) == [
+        "..adapter.fake",
+        "..adapter.fake.FakeAdapter",
+    ]
+    assert _offenders_for(planted, "app.py") == [
+        "..adapter.fake",
+        "..adapter.fake.FakeAdapter",
+    ]
+    # And ``from . import x`` -- the shape with no module name at all. The
+    # joined form must stay at ONE dot: ``".composition"``, not ``"..composition"``,
+    # which would name a different package level.
+    assert _imported_modules("from . import composition\n") == [
+        ".",
+        ".composition",
+    ]
+    assert _offenders_for("from . import composition\n", "composition.py") == [
+        ".",
+        ".composition",
+    ]
 
 
 def test_the_detector_refuses_a_forbidden_absolute_import() -> None:
@@ -312,7 +384,53 @@ def test_the_detector_admits_what_it_should() -> None:
     # The exception, admitted in its file and refused outside it.
     adapter_line = "from hfss_agent.adapter import Adapter\n"
     assert _offenders_for(adapter_line, "composition.py") == []
-    assert _offenders_for(adapter_line, "app.py") == ["hfss_agent.adapter"]
+    assert _offenders_for(adapter_line, "app.py") == [
+        "hfss_agent.adapter",
+        "hfss_agent.adapter.Adapter",
+    ]
+
+
+def test_a_deep_import_spelling_still_reaches_the_locations_scoping() -> None:
+    """F5's POSITIVE LIMB. The bypass that existed, now refused.
+
+    ``from hfss_agent.broker.files import locations`` names a module whose own
+    spelling (``hfss_agent.broker.files``) sits under the broad
+    ``hfss_agent.broker`` grant, so before Part 10 it was admitted anywhere and
+    the directory-creating ``locations`` module was reachable from a tool
+    handler. Both spellings must now be caught, and BOTH must still be
+    admitted in the one file the exception is for.
+    """
+    deep = "from hfss_agent.broker.files import locations\n"
+    direct = "from hfss_agent.broker.files.locations import default_data_dir\n"
+    for spelling in (deep, direct):
+        assert _offenders_for(spelling, "app.py"), (
+            f"{spelling!r} reached locations from app.py without being refused"
+        )
+        assert _offenders_for(spelling, "composition.py") == []
+    # The grant it used to hide behind is still a grant: an ordinary broker
+    # import must not become an offender.
+    assert _offenders_for("from hfss_agent.broker import Broker\n", "app.py") == []
+    sibling = "from hfss_agent.broker.files import errors\n"
+    assert _offenders_for(sibling, "app.py") == []
+
+
+def test_a_subdirectory_does_not_inherit_a_file_scoped_exception() -> None:
+    """F4's POSITIVE LIMB. Scoping is by relative path, so a name collision in
+    a subdirectory inherits nothing.
+
+    Measured before the fix: a real ``server/handlers/composition.py`` importing
+    ``FakeAdapter`` and ``default_data_dir`` left every audit green.
+    """
+    adapter_line = "from hfss_agent.adapter.fake import FakeAdapter\n"
+    locations_line = "from hfss_agent.broker.files import locations\n"
+    for line in (adapter_line, locations_line):
+        assert _offenders_for(line, "composition.py") == [], (
+            "the real composition.py must keep its exceptions"
+        )
+        assert _offenders_for(line, "handlers/composition.py"), (
+            f"{line!r} was admitted in a subdirectory that merely reuses the "
+            "permitted basename"
+        )
 
 
 def test_no_relative_import_exists_in_the_package_today() -> None:

@@ -170,11 +170,86 @@ def test_the_marker_survives_signature_introspection() -> None:
     assert sample.__serialized__ is True
 
 
-def test_the_lock_is_a_single_process_wide_object() -> None:
-    """One lock, module-level. A per-app or per-composition lock would stop
-    serializing the moment a second instance existed -- which is precisely the
-    situation it exists to survive."""
+def test_the_dispatch_lock_is_of_the_reentrant_type() -> None:
+    """NARROWED AND RENAMED, because the old name promised what the assertion
+    could not deliver.
+
+    This was called ``test_the_lock_is_a_single_process_wide_object`` and its
+    body was this one ``isinstance`` line. It distinguishes ``RLock`` from
+    ``Lock`` -- ``type(threading.Lock())`` is ``_thread.lock``, a different
+    type, so that much is real -- but it proves NEITHER 'single' NOR
+    'process-wide': a freshly constructed per-instance ``RLock`` passes it
+    identically. The claim now lives in the test below, which cannot pass
+    against a per-instance lock.
+    """
     assert isinstance(TOOL_DISPATCH_LOCK, type(threading.RLock()))
+    assert not isinstance(threading.Lock(), type(threading.RLock())), (
+        "the isinstance check no longer distinguishes Lock from RLock, so it "
+        "is not testing the reentrancy this module depends on"
+    )
+
+
+def test_a_serialized_call_holds_the_ONE_module_level_lock() -> None:
+    """THE CLAIM THE RENAMED TEST ABOVE COULD NOT MAKE: the lock a decorated
+    tool takes is the module-level ``TOOL_DISPATCH_LOCK``, not one of its own.
+
+    Checked from ANOTHER THREAD, which is the only way to ask. ``RLock`` is
+    reentrant, so a re-acquire on the calling thread succeeds whether or not it
+    is the same object; a second thread's non-blocking acquire fails if and
+    only if the running handler really holds this object.
+
+    FAILS WHEN: ``serialized`` builds its own lock, takes one off the app or
+    the composition, or stops locking at all. Each of those leaves the process
+    with more than one lock and therefore with no serialization at all -- the
+    exact failure ``serialization.py`` says a module-level lock exists to
+    prevent ("a per-instance lock would silently stop serializing the moment a
+    second instance appeared").
+    """
+    observed: dict[str, bool] = {}
+
+    def probe_from_another_thread() -> None:
+        acquired = TOOL_DISPATCH_LOCK.acquire(blocking=False)
+        observed["acquired_while_held"] = acquired
+        if acquired:
+            # Release from the thread that took it, or every later test in
+            # this process deadlocks on a lock nobody owns.
+            TOOL_DISPATCH_LOCK.release()
+
+    @serialized
+    def tool() -> str:
+        prober = threading.Thread(target=probe_from_another_thread, daemon=True)
+        prober.start()
+        prober.join(5.0)
+        assert not prober.is_alive(), "the probe thread never finished"
+        return "done"
+
+    assert tool() == "done"
+    assert observed["acquired_while_held"] is False, (
+        "another thread acquired TOOL_DISPATCH_LOCK while a @serialized tool "
+        "was running, so the decorator is holding some OTHER lock. There is "
+        "more than one lock in this process and nothing is serialized."
+    )
+
+
+def test_the_probe_would_notice_an_unheld_lock() -> None:
+    """The companion limb: outside a serialized call the same non-blocking
+    acquire SUCCEEDS. Without this, a probe that always reported False -- a
+    thread that never ran, an exception swallowed -- would make the test above
+    pass for the wrong reason."""
+    acquired: list[bool] = []
+
+    def probe() -> None:
+        got = TOOL_DISPATCH_LOCK.acquire(blocking=False)
+        acquired.append(got)
+        if got:
+            TOOL_DISPATCH_LOCK.release()
+
+    prober = threading.Thread(target=probe, daemon=True)
+    prober.start()
+    prober.join(5.0)
+    assert acquired == [True], (
+        "the lock could not be acquired from another thread even with no tool running"
+    )
 
 
 def test_the_audit_log_loses_no_record_under_concurrent_tool_calls(
