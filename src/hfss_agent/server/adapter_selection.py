@@ -105,6 +105,21 @@ def select_adapter(
 ) -> Adapter:
     """The one ``Adapter`` this process will use, or a refusal to start.
 
+    PUBLIC BUT UNCALLED IN ``src/``, DELIBERATELY -- the same trade
+    ``findings.findings_template_text``, ``validate_native.native_template_text``
+    and ``metrics.touchstone_port_count`` already make, recorded here for the
+    same reason: so the next reader does not delete it as dead code.
+
+    ``__main__`` calls ``resolve_adapter_kind`` and ``build_adapter``
+    separately, because it needs the resolved KIND for the handshake disclosure
+    as well as the adapter itself, and because splitting them is what lets CI
+    test the decision rules without the ``live`` extra installed. Neither reason
+    is a caller's problem. THIS function is the whole decision in one call, and
+    it is what a future caller wanting "just give me the adapter" should find --
+    rather than discovering the two-step, copying it, and acquiring a second
+    place where the kind is derived. Its tests are the ones that pin the
+    end-to-end behaviour of both halves composed.
+
     Args:
         requested: the ``--adapter`` value, or ``None`` when the flag was not
             given. REQUIRED AND UNDEFAULTED as a parameter — the caller must
