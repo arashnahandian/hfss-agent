@@ -1,9 +1,9 @@
 """Process entry point (W-1, Step 2.8): ``hfss-agent`` and ``python -m``.
 
-IMPORTING THIS MODULE STARTS NOTHING. Every side effect — reading the
-environment, selecting an adapter, creating the data directory, binding the
-transport — happens inside ``main()``. That is not tidiness: this module is
-named by ``[project.scripts]``, so a console-script shim imports it as
+IMPORTING THIS MODULE STARTS NOTHING. Every side effect — parsing arguments,
+selecting an adapter, creating the data directory, binding the transport —
+happens inside ``main()``. That is not tidiness: this module is named by
+``[project.scripts]``, so a console-script shim imports it as
 ``hfss_agent.server.__main__`` to look up ``main``, and an import that started
 serving would hijack that lookup. It also keeps the module importable by a test
 that wants ``main`` without a server.
@@ -19,11 +19,19 @@ to stderr, and nothing in this package prints to stdout at any point.
 
 from __future__ import annotations
 
-import os
+import argparse
 import sys
+from collections.abc import Sequence
 
 from hfss_agent.preflight import REAL_PROBES
-from hfss_agent.server.adapter_selection import AdapterSelectionError, select_adapter
+from hfss_agent.server.adapter_selection import (
+    ADAPTER_FLAG,
+    LEGAL_ADAPTER_VALUES,
+    LIVE,
+    AdapterSelectionError,
+    build_adapter,
+    resolve_adapter_kind,
+)
 from hfss_agent.server.app import build_app
 from hfss_agent.server.composition import build_composition
 
@@ -32,8 +40,48 @@ from hfss_agent.server.composition import build_composition
 REFUSED_EXIT_CODE = 2
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line.
+
+    ``--adapter`` deliberately does NOT use argparse's ``choices=``. With
+    ``choices`` argparse rejects a bad value itself, printing its own usage text
+    and exiting before ``select_adapter`` is consulted — which would leave two
+    refusal paths with two different wordings, only one of which names the fix
+    and is ASCII-checked. Accepting any string here keeps the single refusal
+    path the module docstring of ``adapter_selection`` describes.
+    """
+    parser = argparse.ArgumentParser(
+        prog="hfss-agent",
+        description=(
+            "Read-only MCP server for Ansys HFSS. Attaches to a running AEDT "
+            "session; never launches, modifies, or solves."
+        ),
+    )
+    parser.add_argument(
+        ADAPTER_FLAG,
+        dest="adapter",
+        default=None,
+        metavar="{" + ",".join(LEGAL_ADAPTER_VALUES) + "}",
+        help=(
+            "Which backend to serve from. Omit for '"
+            + LIVE
+            + "' (attach to real HFSS). '"
+            + "fake"
+            + "' serves canned test data and is for development only; the "
+            "server discloses it at handshake, but individual responses carry "
+            "no marker."
+        ),
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Select the adapter, wire the graph, and serve MCP over stdio.
+
+    Args:
+        argv: the argument list, defaulting to the process's own. Injectable so
+            a test drives the real parser and the real refusal path without
+            touching ``sys.argv``.
 
     Returns:
         ``0`` on a clean shutdown, ``REFUSED_EXIT_CODE`` when startup was
@@ -41,16 +89,23 @@ def main() -> int:
         ``python -m`` behave identically, and so a test can call ``main`` and
         assert on the code instead of catching ``SystemExit``.
     """
+    args = build_parser().parse_args(argv)
+
     try:
-        adapter = select_adapter(os.environ, REAL_PROBES.pyaedt_version)
+        # Resolved ONCE and used twice — for construction and for the
+        # disclosure. Deriving the kind a second time from args.adapter would be
+        # a second source of truth about whether this process is simulated, and
+        # the disclosure is the half that must never be wrong.
+        adapter_kind = resolve_adapter_kind(args.adapter, REAL_PROBES.pyaedt_version)
     except AdapterSelectionError as refusal:
         # Two lines, because "what is wrong" and "what to do" are two things.
         print(f"hfss-agent: refusing to start: {refusal.reason}", file=sys.stderr)
         print(f"hfss-agent: {refusal.remedy}", file=sys.stderr)
         return REFUSED_EXIT_CODE
 
+    adapter = build_adapter(adapter_kind)
     composition = build_composition(adapter)
-    app = build_app(composition)
+    app = build_app(composition, adapter_kind=adapter_kind)
     # Blocks until the client disconnects or the process is signalled. "stdio"
     # is passed explicitly rather than relying on the SDK default: the transport
     # is a locked architectural decision (no network listener at all), and a

@@ -9,50 +9,62 @@ stamps) is built to make impossible. Every other guard in this repo assumes the
 numbers came from the user's own HFSS. If the adapter is wrong, all of them are
 faithfully certifying fiction.
 
+A COMMAND-LINE FLAG, NOT AN ENVIRONMENT VARIABLE, AND THE REASON IS THE FAILURE
+MODE RATHER THAN TASTE. An environment variable is the one mechanism that can be
+set once at Windows user level and then apply silently to every MCP client on
+the machine, forever, invisible at the point of use. Someone who exports it for
+an afternoon of development keeps it for months. A flag cannot be set globally:
+it lives in the ``args`` of the client configuration that spawns this server,
+next to the command, visible to anyone who opens that file. The development
+convenience an env var would have bought is illusory here — ``select_adapter``
+takes its input as a parameter and ``build_composition`` takes an ``Adapter``
+directly, so tests never touch process-wide state either way.
+
+THERE IS EXACTLY ONE MECHANISM. No environment-variable fallback is read, by
+design: two mechanisms need a precedence rule, and a precedence rule is one more
+thing that can surprise someone at exactly the wrong moment.
+
 SO THE DEFAULT IS LIVE AND THE FAKE REQUIRES SAYING SO. Three rules, each of
 which is a refusal rather than a fallback:
 
-  1. Unset -> LIVE. Absence of configuration must not select the safe-for-the-
-     developer option; it must select the correct-for-the-user one.
+  1. Flag absent -> LIVE. Absence of configuration must not select the
+     safe-for-the-developer option; it must select the correct-for-the-user one.
   2. LIVE with no PyAEDT -> REFUSE TO START, naming the fix. Never a silent
      downgrade to the fake. This is ``RefuseAllConfirmer``'s ethos applied at
      startup: when the correct thing cannot be done, refuse; do not substitute
      something that will answer anyway.
-  3. An unrecognised value -> REFUSE TO START. A typo (``HFSS_AGENT_ADAPTER=
-     fkae``) must not be read as "not fake, therefore live" or as "unset,
-     therefore default". It means the operator intended something this server
-     could not honour, and guessing which is how a fake session ships to a user.
+  3. An unrecognised value -> REFUSE TO START. A typo (``--adapter fkae``) must
+     not be read as "not fake, therefore live" or as "absent, therefore
+     default". It means the operator intended something this server could not
+     honour, and guessing which is how a fake session ships to a user.
 
 A KNOWN AND DELIBERATE GAP, STATED HERE BECAUSE IT IS NOT FIXABLE FROM THIS
 MODULE: nothing in any tool response distinguishes fake from real. ``Environment``
 carries four fields (aedt_version, pyaedt_version, python_version,
 wrapper_version) and the fake fills all four with realistic values — its
-``pyaedt_version`` is literally the pinned real one. So this module's refusals
-are the ONLY barrier between a fake session and a user who believes it. That is
-why they are refusals and not warnings. Adding a provenance field to say which
-adapter answered would be a contract change and is not proposed here.
+``pyaedt_version`` is literally the pinned real one, and ``preflight_environment``
+run against a fake-backed broker reports ``overall="ok"`` with
+``aedt_version_source="attached_session"``. So these refusals, plus the
+handshake disclosure in ``app``, are the ONLY things standing between a fake
+session and a user who believes it. Neither marks the VALUES; see ``app`` for
+the honest bounds of what the disclosure can claim.
 
 TAKES ITS INPUTS INJECTED, BOTH REQUIRED AND UNDEFAULTED, following
 ``preflight.preflight_environment``'s ``probes`` for the same stated reason:
 with no default there is nothing for a forgotten argument to fall through to, so
-no caller and no test can read the host machine — or the host environment — by
-omission.
+no caller and no test can read the host machine by omission.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 
 from hfss_agent.adapter import Adapter
 from hfss_agent.preflight import VersionRead
 
-# The one environment variable this package reads. Prefixed, because an
-# unprefixed name like ADAPTER would collide with anything else on the machine
-# and this variable can select a session that answers with fiction.
-ADAPTER_ENV_VAR = "HFSS_AGENT_ADAPTER"
-
-# The two legal values. LIVE is also the value assumed when the variable is
-# unset; there is no third state and no "auto".
+# The flag this package reads, and its two legal values. LIVE is also the value
+# assumed when the flag is absent; there is no third state and no "auto".
+ADAPTER_FLAG = "--adapter"
 LIVE = "live"
 FAKE = "fake"
 LEGAL_ADAPTER_VALUES = (LIVE, FAKE)
@@ -74,6 +86,11 @@ class AdapterSelectionError(Exception):
     Carries ``remedy`` separately from ``reason`` so the caller renders "what is
     wrong" and "what to do about it" as two things. A refusal that does not name
     its fix is how a user concludes the tool is broken.
+
+    BOTH STRINGS ARE ASCII-ONLY, AND A TEST ENFORCES IT. These are an operator's
+    only diagnostic, they go to stderr, and the primary development platform's
+    console is cp1252 — a message that renders "refusing to start ? PyAEDT ?"
+    fails at the one moment it exists for.
     """
 
     def __init__(self, reason: str, remedy: str) -> None:
@@ -83,15 +100,15 @@ class AdapterSelectionError(Exception):
 
 
 def select_adapter(
-    environ: Mapping[str, str],
+    requested: str | None,
     pyaedt_version: Callable[[], VersionRead],
 ) -> Adapter:
     """The one ``Adapter`` this process will use, or a refusal to start.
 
     Args:
-        environ: the process environment. REQUIRED AND UNDEFAULTED — see the
-            module docstring. Tests pass a plain dict; ``__main__`` passes
-            ``os.environ``.
+        requested: the ``--adapter`` value, or ``None`` when the flag was not
+            given. REQUIRED AND UNDEFAULTED as a parameter — the caller must
+            state what was asked for, including that nothing was.
         pyaedt_version: reads whether PyAEDT is installed, as the same
             three-state ``VersionRead`` preflight uses. REQUIRED AND UNDEFAULTED
             for the same reason. Reusing preflight's probe rather than writing a
@@ -108,43 +125,65 @@ def select_adapter(
         AdapterSelectionError: on an unrecognised value, or when live was
             selected (explicitly or by default) and PyAEDT is not usable.
     """
-    requested = environ.get(ADAPTER_ENV_VAR)
+    return build_adapter(resolve_adapter_kind(requested, pyaedt_version))
+
+
+def resolve_adapter_kind(
+    requested: str | None,
+    pyaedt_version: Callable[[], VersionRead],
+) -> str:
+    """THE DECISION, with no construction: ``LIVE``, ``FAKE``, or a refusal.
+
+    SPLIT OUT FROM ``select_adapter`` SO CI CAN TEST IT, and the reason is worth
+    stating because the split looks like indirection otherwise. Constructing the
+    live adapter imports the AEDT API, which is an OPTIONAL extra that public CI
+    deliberately does not install — both legs run ``uv sync`` without it. If the
+    decision and the construction stayed fused, then every test of the rules
+    that matter most ("an absent flag means LIVE", "live without PyAEDT
+    REFUSES") could only run on a machine with the extra, and would be skipped
+    in exactly the environment that is supposed to prove them. The rules are
+    pure logic over a probe result; only the final object needs the backend.
+
+    ``__main__`` also needs the resolved kind separately from the adapter, to
+    tell ``build_app`` which disclosure to publish. Resolving once here and
+    passing the answer to both is what stops the kind being recomputed — a
+    second ``strip().lower()`` elsewhere would be a second source of truth about
+    whether this process is simulated, and the two could disagree.
+    """
     if requested is None:
         choice = LIVE
     else:
-        # Whitespace-tolerant and case-insensitive, because a trailing space in
-        # a Windows environment variable is a mis-set value, not a different
-        # intention. Everything else is refused: an explicitly-set-but-empty
-        # value is MALFORMED, not "unset", and is not silently treated as the
-        # default — the operator touched this variable on purpose.
+        # Whitespace-tolerant and case-insensitive, because a stray space around
+        # a value in a client's JSON config is a mis-set value, not a different
+        # intention. Everything else is refused: an explicitly-passed empty
+        # value is MALFORMED, not "absent", and is not silently treated as the
+        # default — the operator passed the flag on purpose.
         choice = requested.strip().lower()
         if choice not in LEGAL_ADAPTER_VALUES:
             # Built outside the f-string below: nested same-type quotes inside
             # an f-string are a syntax error before Python 3.12, and this
             # package supports 3.10.
-            legal = " or ".join(repr(value) for value in LEGAL_ADAPTER_VALUES)
+            legal = " or ".join(LEGAL_ADAPTER_VALUES)
             raise AdapterSelectionError(
                 reason=(
-                    f"{ADAPTER_ENV_VAR} is set to {requested!r}, which is not a "
+                    f"{ADAPTER_FLAG} was given {requested!r}, which is not a "
                     f"recognised adapter. The server did not start, and did NOT "
                     f"fall back to a default: an unrecognised value means the "
                     f"intended adapter is unknown, and guessing could serve "
                     f"simulated data as if it were read from HFSS."
                 ),
                 remedy=(
-                    f"Set {ADAPTER_ENV_VAR} to {legal}, or unset it entirely "
-                    f"to use {LIVE!r}."
+                    f"Pass {ADAPTER_FLAG} with {legal}, or omit the flag "
+                    f"entirely to use {LIVE}."
                 ),
             )
 
     if choice == FAKE:
-        # Imported HERE, not at module scope, for the reason the live branch
-        # defers its own import: neither backend should be loaded by a process
-        # that did not ask for it.
-        from hfss_agent.adapter.fake import FakeAdapter
+        return FAKE
 
-        return FakeAdapter()
-
+    # The live branch is the only one that consults the probe: asking for the
+    # fake must not depend on the live backend being readable, or a machine
+    # without PyAEDT could not run the fake either.
     read = pyaedt_version()
     if read.state != "found":
         raise AdapterSelectionError(
@@ -152,9 +191,34 @@ def select_adapter(
             remedy=(
                 "Install the live backend with: uv sync --extra live . To run "
                 f"against simulated data instead (for development ONLY, never "
-                f"to answer a question about a real design), set "
-                f"{ADAPTER_ENV_VAR}={FAKE}."
+                f"to answer a question about a real design), pass "
+                f"{ADAPTER_FLAG} {FAKE}."
             ),
+        )
+    return LIVE
+
+
+def build_adapter(kind: str) -> Adapter:
+    """Construct the adapter for an already-resolved kind.
+
+    Both imports are deferred to their branch, so a process gets exactly the
+    backend it asked for in ``sys.modules`` and no other. That is load-bearing
+    on the live side: importing ``hfss_agent.adapter.real`` is PyAEDT-free by
+    design, and only CALLING ``make_live_adapter`` pulls in the AEDT API.
+
+    Takes the kind rather than re-deriving it, so this function makes no
+    decisions at all -- an unknown kind is a programming error here, not an
+    operator error, because ``resolve_adapter_kind`` is the only thing that
+    should ever produce one.
+    """
+    if kind == FAKE:
+        from hfss_agent.adapter.fake import FakeAdapter
+
+        return FakeAdapter()
+    if kind != LIVE:
+        raise ValueError(
+            f"build_adapter received {kind!r}; only {LIVE!r} and {FAKE!r} are "
+            "constructible, and resolve_adapter_kind is what produces them."
         )
     from hfss_agent.adapter.real import make_live_adapter
 

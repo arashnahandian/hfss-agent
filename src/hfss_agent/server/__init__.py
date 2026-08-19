@@ -31,24 +31,32 @@ one, and it is what keeps a protocol-version bump a contained change.
 """
 
 from hfss_agent.server.adapter_selection import (
-    ADAPTER_ENV_VAR,
+    ADAPTER_FLAG,
     FAKE,
     LEGAL_ADAPTER_VALUES,
     LIVE,
     AdapterSelectionError,
+    build_adapter,
+    resolve_adapter_kind,
     select_adapter,
 )
 from hfss_agent.server.composition import Composition, build_composition
+from hfss_agent.server.serialization import TOOL_DISPATCH_LOCK, serialized
 
 __all__ = [
     # Adapter selection (fail-closed; see the module for the refusal ethos)
-    "ADAPTER_ENV_VAR",
+    "ADAPTER_FLAG",
     "LEGAL_ADAPTER_VALUES",
     "LIVE",
     "FAKE",
     "AdapterSelectionError",
+    "resolve_adapter_kind",
+    "build_adapter",
     "select_adapter",
     # The composition root
     "Composition",
     "build_composition",
+    # Dispatch serialization — read serialization.py for what it does NOT cover
+    "TOOL_DISPATCH_LOCK",
+    "serialized",
 ]
