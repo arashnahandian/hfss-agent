@@ -34,7 +34,21 @@ classifiers = [
 # (Step 0.2 onward), not at scaffold time.
 dependencies = [
     "pydantic>=2",
+    # The MCP surface (W-1, Step 2.8). CORE, not an extra: the MCP server is
+    # what this package IS, and the tier-completeness test cannot exist in CI
+    # behind an optional import. Floor at 2.0.0 because that is the release
+    # measured against; ceiling at <3 because this SDK renamed its primary
+    # server class across its last major (FastMCP -> MCPServer), so a major
+    # bump is a migration event, not a routine upgrade.
+    "mcp>=2.0.0,<3",
 ]
+
+[project.scripts]
+# The command an MCP client config names to spawn this server. Without it a
+# client must hardcode an absolute interpreter path plus -m, which is fragile
+# on Windows and unshareable between machines. ``python -m hfss_agent.server``
+# stays available via server/__main__.py for debugging.
+hfss-agent = "hfss_agent.server.__main__:main"
 
 [project.optional-dependencies]
 # Live AEDT backend for the real adapter (Step 1.2). Declared as an OPTIONAL

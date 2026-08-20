@@ -34,7 +34,14 @@ py -3.12 -m venv .venv
 # source .venv/bin/activate         # bash / Linux
 
 # Install the package (editable) into the venv using uv's pip interface.
-uv pip install -e .
+# The `live` extra pulls PyAEDT, which is what the server attaches to a real
+# AEDT session with. WITHOUT IT `hfss-agent` REFUSES TO START rather than
+# quietly serving simulated data, so install it unless you only ever intend
+# to run against the fake adapter.
+uv pip install -e ".[live]"
+
+# Fake adapter only (no AEDT, no PyAEDT) - Linux development, CI:
+# uv pip install -e .
 
 # Lint.
 uv run ruff check .
@@ -45,6 +52,28 @@ Verify the interpreter reports 3.12.x:
 ```powershell
 .\.venv\Scripts\python.exe --version
 ```
+
+## Running it
+
+Installing puts an `hfss-agent` command in the venv. It speaks MCP over
+**stdio** - there is no network listener of any kind - so an MCP client
+spawns it as a subprocess rather than connecting to it.
+
+```powershell
+.\.venv\Scripts\hfss-agent.exe                  # attach to real HFSS (default)
+.\.venv\Scripts\hfss-agent.exe --adapter fake   # canned data, development only
+```
+
+`--adapter` takes `live` or `fake`; omitting it means `live`.
+
+- **`live`** needs the `live` extra. If PyAEDT is not importable the server
+  **refuses to start** and names the fix - it never falls back to `fake`.
+  Serving canned data to someone who believes they are reading their own
+  design is the one failure this tool must never produce.
+- **`fake`** serves canned test data. The server discloses this at the MCP
+  handshake, in both the server name and the instructions text, and the
+  notice separates the values that are invented from the ones that are real
+  readings of your machine. **Individual responses carry no marker.**
 
 ## Python version pin
 
@@ -57,5 +86,25 @@ in the project's ADR log for the full reasoning.
 
 ## Status
 
-Scaffold only (Step 0.1): the package tree imports cleanly; no feature logic
-exists yet.
+Step 2.8 is complete on the current branch: the package installs, starts, and
+serves a working read-only MCP server over stdio.
+
+**Reachable today** - 11 of the 17 tools in the design's tool surface:
+environment preflight; attach; selection listing and selection; session
+status; design inspection; design intent (set / get / clear); the append-only
+audit log; and a redacted diagnostics export.
+
+**Not built yet** - 6 tools are recorded as deferred, each naming the specific
+missing piece, in `src/hfss_agent/server/tool_surface.py`:
+`list_aedt_processes`, `validate_setup`, `check_solution_validity`,
+`compute_metrics`, `get_solve_health`, `export_results`.
+
+So three of the four capabilities named at the top of this file - native HFSS
+validation passthrough, solution-validity gating, and deterministic
+S-parameter metrics - are **not reachable through the tool surface yet**,
+although most of the code beneath them exists and is tested. That opening
+paragraph describes the wrapper as designed; this section describes what it
+does today, and this section is the one to believe.
+
+Everything runs against the fake adapter with no AEDT licence; live use needs
+the `live` extra and an AEDT session already running on the machine.

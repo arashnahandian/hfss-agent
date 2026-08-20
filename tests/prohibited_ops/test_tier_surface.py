@@ -9,10 +9,28 @@ confirmer is even consulted (Part 2's pipeline, proven in
 ``tests/broker/test_confirmation.py`` with synthetic capabilities).
 
 The tier check ITERATES THE REGISTRY, never a hardcoded name list, so tools
-registered later (Step 2.8) are covered the moment their factory joins the
-production list below. Until 2.8 provides a single composition root, the
-factory list here IS the production surface; when that root exists, this test
-should build the registry through it instead so the two can never diverge.
+registered later are covered the moment their factory joins the production
+surface.
+
+LIFTED AT STEP 2.8, AS THIS DOCSTRING INSTRUCTED. It used to say: "Until 2.8
+provides a single composition root, the factory list here IS the production
+surface; when that root exists, this test should build the registry through it
+instead so the two can never diverge." That root now exists
+(``hfss_agent.server.build_composition``) and this file builds through it. The
+local factory list is gone -- deliberately, not merely unused: a second way to
+compose the surface is exactly the divergence the instruction was written to
+prevent, and leaving it here as a convenience would recreate it.
+
+The lift was verified to be behaviour-preserving before it was made: the old
+factory list and ``build_composition`` produced the same ten (name, tier) pairs
+in the same order, so no assertion below changed meaning.
+
+WHAT THIS PROOF DOES NOT COVER, and where the rest of it lives. The registry
+holds CAPABILITIES, which is not the same set as the tools a client is offered:
+``preflight_environment`` reaches no capability at all, and ``inspect_design``
+and ``export_diagnostics_bundle`` are assemblers whose registry entries are the
+things they dispatch. ``test_mcp_tier_surface.py`` iterates the exposed tool
+surface and closes that gap.
 """
 
 from __future__ import annotations
@@ -23,27 +41,21 @@ from hfss_agent.adapter.fake import FakeAdapter
 from hfss_agent.broker import (
     CapabilityRegistry,
     ConfirmationRequest,
-    IntentStore,
     RefuseAllConfirmer,
-    audit_capabilities,
-    intent_capabilities,
-    session_routed_specs,
 )
-from hfss_agent.session import Session
+from hfss_agent.server import build_composition
 
 
 def _production_registry(tmp_path: Path) -> CapabilityRegistry:
-    """The full production capability surface, composed the way Step 2.8
-    will. Registration touches no file — the paths are only closed over — so
-    building this in a test is side-effect-free."""
-    session = Session(FakeAdapter())
-    store = IntentStore(str(tmp_path / "intent.json"))
-    log_path = str(tmp_path / "audit-log.jsonl")
-    return CapabilityRegistry(
-        session_routed_specs(session)
-        + intent_capabilities(store, session)
-        + audit_capabilities(log_path)
-    )
+    """The production capability surface, built through the composition root.
+
+    ``build_composition`` is what ``__main__`` calls, so this proof and the
+    shipped server cannot describe different surfaces. The adapter is the fake
+    because the registry's SHAPE does not depend on which backend is behind it
+    -- registration closes over bound methods without calling any of them -- and
+    a live adapter would make this test require the ``live`` extra for nothing.
+    """
+    return build_composition(FakeAdapter(), data_dir=str(tmp_path)).registry
 
 
 def test_every_production_capability_is_safe_tier(tmp_path: Path) -> None:
