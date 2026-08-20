@@ -49,6 +49,14 @@ handshake disclosure in ``app``, are the ONLY things standing between a fake
 session and a user who believes it. Neither marks the VALUES; see ``app`` for
 the honest bounds of what the disclosure can claim.
 
+READ THAT PARAGRAPH WITH ``app``'s, NOT INSTEAD OF IT. The sentence above is
+about the ``Environment`` the FAKE ADAPTER holds. It is easy to read as "so
+everything a fake session reports is invented", and that is not true:
+``preflight_environment`` takes its versions from ``REAL_PROBES``, not from the
+session, so it reports the operator's real interpreter and package versions --
+and, before any attach, the AEDT version really installed on the machine. The
+disclosure in ``app`` is three-part for exactly that reason.
+
 TAKES ITS INPUTS INJECTED, BOTH REQUIRED AND UNDEFAULTED, following
 ``preflight.preflight_environment``'s ``probes`` for the same stated reason:
 with no default there is nothing for a forgotten argument to fall through to, so
@@ -204,10 +212,20 @@ def resolve_adapter_kind(
         raise AdapterSelectionError(
             reason=_live_unavailable_reason(read),
             remedy=(
-                "Install the live backend with: uv sync --extra live . To run "
-                f"against simulated data instead (for development ONLY, never "
-                f"to answer a question about a real design), pass "
-                f"{ADAPTER_FLAG} {FAKE}."
+                # NAMES THE REQUIREMENT FIRST, THEN ONE COMMAND THAT WORKS
+                # TODAY. The requirement -- this package's 'live' extra -- is
+                # true however the package was obtained; the command is only
+                # true in a repo checkout, which is every install that exists
+                # right now because nothing is published. A pip/PyPI spelling
+                # is deliberately NOT offered: it would be the first claim in
+                # this codebase that the package can be installed from an
+                # index, and it cannot. The command matches the README's
+                # setup step exactly, so the two cannot send an operator to
+                # two different places.
+                "Install this package's 'live' extra. In a repo checkout: "
+                'uv pip install -e ".[live]". To run against simulated data '
+                "instead (for development ONLY, never to answer a question "
+                f"about a real design), pass {ADAPTER_FLAG} {FAKE}."
             ),
         )
     return LIVE

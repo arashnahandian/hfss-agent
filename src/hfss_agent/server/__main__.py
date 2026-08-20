@@ -13,8 +13,18 @@ descriptor 1 for JSON-RPC and points the process's own stdout at stderr for the
 duration, so a stray ``print`` inside a handler lands on stderr rather than
 corrupting a frame — measured, not assumed. That protection begins when serving
 begins: anything written to stdout BEFORE ``run()`` reaches the real descriptor
-and would sit ahead of the first frame. So every diagnostic here goes explicitly
-to stderr, and nothing in this package prints to stdout at any point.
+and would sit ahead of the first frame. So every diagnostic this module writes
+goes explicitly to stderr, and no module in this package writes to stdout.
+
+ONE THING DOES PRINT TO STDOUT, and it is argparse's, not ours: ``--help``
+prints usage there and exits. (A usage ERROR goes to stderr and also exits.)
+That is correct behaviour for a command line and unreachable under a client,
+which spawns this server without ``--help``; either way the process exits
+instead of serving, so nothing can land ahead of a frame. This paragraph used
+to say "nothing in this package prints to stdout at any point", which is a
+stronger claim than is true and than anything enforces:
+``test_no_module_writes_to_stdout_at_import_time`` walks every source under
+``src/hfss_agent`` for module-level writes and cannot see inside argparse.
 """
 
 from __future__ import annotations
@@ -26,6 +36,7 @@ from collections.abc import Sequence
 from hfss_agent.preflight import REAL_PROBES
 from hfss_agent.server.adapter_selection import (
     ADAPTER_FLAG,
+    FAKE,
     LEGAL_ADAPTER_VALUES,
     LIVE,
     AdapterSelectionError,
@@ -62,11 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="adapter",
         default=None,
         metavar="{" + ",".join(LEGAL_ADAPTER_VALUES) + "}",
+        # BOTH VALUES COME FROM THE CONSTANTS. The LIVE half always did; the
+        # other half was the literal "fake", two lines away, so a rename of
+        # FAKE would have left this help text naming a value the server
+        # refuses -- and nothing tests help text. Same rule as the metavar
+        # just above, which derives its list from LEGAL_ADAPTER_VALUES.
         help=(
             "Which backend to serve from. Omit for '"
             + LIVE
             + "' (attach to real HFSS). '"
-            + "fake"
+            + FAKE
             + "' serves canned test data and is for development only; the "
             "server discloses it at handshake, but individual responses carry "
             "no marker."

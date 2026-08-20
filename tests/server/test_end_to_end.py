@@ -461,7 +461,12 @@ def test_an_unknown_tool_argument_is_DROPPED_rather_than_refused(
 # Nothing anywhere read a description.
 _EXPECTED_DESCRIPTIONS = {
     "preflight_environment": "Check this machine against the published support matrix.",
-    "attach": "Attach (attach-only) to a running AEDT process.",
+    # Names where the process id comes from, because no registered tool
+    # enumerates them -- ``list_aedt_processes`` is deferred.
+    "attach": (
+        "Attach (attach-only) to a running AEDT process. This server cannot "
+        "list process ids; obtain one from the operating system."
+    ),
     "list_selection_options": "List the choices for a selection stage.",
     "select": "Select a project/design/setup/sweep/variation.",
     "get_session_status": "Report session health, selection chain, and suspect flag.",

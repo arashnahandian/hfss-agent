@@ -53,7 +53,13 @@ def test_the_flag_is_absent_and_live_is_not_available() -> None:
     with pytest.raises(AdapterSelectionError) as caught:
         select_adapter(None, absent)
     assert "not installed" in caught.value.reason
-    assert "uv sync --extra live" in caught.value.remedy
+    # THE REMEDY MUST NAME THE REQUIREMENT AND A COMMAND THAT WORKS. It used
+    # to name ``uv sync --extra live``, which the README never mentioned --
+    # so a refused operator was sent to a command the setup instructions did
+    # not teach. Part 11 aligned the two; this pins the alignment, and will
+    # fail if either side moves without the other.
+    assert "'live' extra" in caught.value.remedy
+    assert 'uv pip install -e ".[live]"' in caught.value.remedy
 
 
 def test_absent_and_unreadable_are_different_refusals() -> None:

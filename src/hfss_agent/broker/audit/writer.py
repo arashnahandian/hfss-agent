@@ -32,14 +32,34 @@ ACCEPTED LIMITATIONS — stated, with no machinery built for either:
     seeks to end, then writes) and the newline guard adds a second open,
     widening the window further.
 
-    The measurement, so the size of it is not left to imagination. 400 records
-    appended from 16 threads: WITHOUT a lock, 395 lines written — 5 records lost
-    and 2 lines torn — while ``torn_tail`` reported False and ``corrupt_lines``
-    was empty, so the log looked complete. WITH the Step 2.8 server-layer lock,
-    400 of 400, nothing lost, nothing torn. Silent loss is precisely the outcome
-    this module's opening paragraph calls "worse than no log, because it looks
-    complete", and neither of the reader's two incompleteness signals can see
-    it: nothing was torn and nothing was corrupt — records simply were not there.
+    THE MEASUREMENT, AND THE FIRST THING TO KNOW ABOUT IT IS THAT THE FAILURE
+    IS NONDETERMINISTIC — the same drive loses a different number of records
+    each time, so no single figure describes it. Parameters: 16 threads x 25
+    appends = 400 records, this writer, no server-layer lock, Windows on
+    CPython 3.12. Six consecutive runs lost 11, 11, 14, 17, 15 and 8 records.
+    One run stated in full: 400 expected, 389 records parsed back, 11 lost,
+    ``torn_tail`` False, ``corrupt_lines`` [5]. WITH the Step 2.8 server-layer
+    lock, six further runs of the same drive: 400 of 400 every time, nothing
+    lost, nothing torn, ``corrupt_lines`` empty.
+
+    WHAT IS SILENT AND WHAT IS NOT — an earlier version of this paragraph got
+    this wrong in both directions, and the correction matters more than the
+    numbers. It said "395 lines written — 5 records lost and 2 lines torn —
+    while ``torn_tail`` reported False and ``corrupt_lines`` was empty". Those
+    cannot all be true at once: ``reader.py`` routes a malformed FINAL line to
+    ``torn_tail`` and a malformed INTERIOR line to ``corrupt_lines``, so a torn
+    interior line is ALWAYS reported. Measured, every one of the six unlocked
+    runs came back with a non-empty ``corrupt_lines`` (between one and five
+    interior lines) and none with a torn tail.
+
+    So the honest statement is narrower than "the log looked complete". The
+    TEARING is loud: the reader names the damaged line numbers and the response
+    template carries an unmissable warning. The LOSS is what is silent, because
+    nothing anywhere knows how many records there SHOULD have been — a reader
+    told "line 5 is corrupt" has no way to learn that eleven further records
+    are simply absent. That absence is the part this module's opening paragraph
+    means by "worse than no log, because it looks complete", and it is the part
+    no signal covers.
 
     WHAT MAKES IT SAFE TODAY IS A CALLER, NOT THIS FILE. Every append in
     ``src/`` happens inside ``Broker.dispatch``, and Step 2.8's server layer

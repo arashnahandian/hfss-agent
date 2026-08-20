@@ -1,7 +1,17 @@
-"""Five structural audits over ``src/`` that guard W-1's shape rather than its
-behaviour: where tools may be registered, how many servers may exist to register
-them on, what an assembler actually dispatches, what may reach stdout, and which
-transport may be named.
+"""Five structural audits that guard W-1's shape rather than its behaviour.
+
+    1. where tools may be registered            (all of src/hfss_agent)
+    2. how many servers exist to register on    (all of src/hfss_agent)
+    3. what an assembler actually dispatches    (the assembler modules)
+    4. what may reach stdout at import time     (all of src/hfss_agent)
+    5. which transport may be named             (src/hfss_agent/server ONLY)
+
+THE SCOPES DIFFER AND THE TABLE SAYS SO, because this docstring used to open
+"five structural audits over ``src/``" while audit 5 walks ``server/`` alone.
+That is the right scope for it -- a transport is only ever named where one is
+started -- but a reader who took the blanket claim at face value would believe
+a planted ``run("sse")`` anywhere in the package would be caught, and it
+would not.
 
 ALL FIVE ARE AST WALKS, NEVER TEXT SEARCHES, and one of them proves why that
 matters: ``server/serialization.py`` contains the literal text
@@ -34,7 +44,7 @@ def _tree(path: Path) -> ast.Module:
 
 
 # =============================================================================
-# 1. THE SINGLE REGISTRATION SITE (hole 1)
+# 1. THE SINGLE REGISTRATION SITE
 # =============================================================================
 
 
@@ -105,9 +115,11 @@ def test_the_registration_detector_sees_both_shapes() -> None:
     assert not _registers_a_tool(ast.parse('"""@server.tool(name=\'x\')"""\n'))
 
 
-# --- and the single SERVER-CONSTRUCTION site ---------------------------------
+# =============================================================================
+# 2. THE SINGLE SERVER-CONSTRUCTION SITE
+# =============================================================================
 #
-# THE RESIDUE THE AUDIT ABOVE LEAVES, closed here. "Exactly one file registers
+# THE RESIDUE AUDIT 1 LEAVES, closed here. "Exactly one file registers
 # tools" is NOT "exactly one server exists to register them on", and the gap is
 # reachable: a second entry point could build its own ``MCPServer`` and register
 # onto that. Every guard in ``tests/server/test_completeness.py`` and
@@ -226,7 +238,7 @@ def test_the_server_construction_detector_sees_the_shapes_it_claims() -> None:
 
 
 # =============================================================================
-# 2. ASSEMBLER-DISPATCH AGREEMENT (hole 3)
+# 3. ASSEMBLER-DISPATCH AGREEMENT
 # =============================================================================
 #
 # WHAT THIS CAN AND CANNOT SEE, stated before the code because the limit is the
@@ -484,7 +496,7 @@ def test_stderr_directed_print_is_permitted() -> None:
 
 
 # =============================================================================
-# 5. THE TRANSPORT TRIPWIRE
+# 5. THE TRANSPORT TRIPWIRE (server/ ONLY -- see the module docstring)
 # =============================================================================
 
 _FORBIDDEN_TRANSPORTS = frozenset({"sse", "streamable-http"})

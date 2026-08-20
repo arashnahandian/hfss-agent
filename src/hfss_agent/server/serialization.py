@@ -68,11 +68,14 @@ Two smaller exclusions, stated so the boundary is complete:
 
 THE COST, MEASURED AND ACCEPTED. Every tool call serializes behind every other,
 and the hold is NOT bounded by ADR-10's watchdog -- that watchdog wraps adapter
-primitives only (``adapter/base.py``), and seven paths below a tool handler are
-outside it: audit append (~13 ms, paid twice by a two-dispatch assembler),
-``read_audit_records`` (whole file, linear, on a log that is never rotated), the
-diagnostics bundle, ``os.fsync`` in the export writes, the intent store,
-``compute_metrics``' array work, and the preflight probes. The alternative was
+primitives only (``adapter/base.py``), and SIX paths a registered tool can
+actually reach are outside it: audit append (~13 ms, paid twice by a
+two-dispatch assembler), ``read_audit_records`` (whole file, linear, on a log
+that is never rotated), the diagnostics bundle, ``os.fsync`` in the export
+writes, the intent store, and the preflight probes. ``compute_metrics``' array
+work is a SEVENTH IN PROSPECT ONLY: the function exists and is complete, but no
+tool reaches it (the tool is deferred), so it costs nothing today and is listed
+here so whoever registers it knows what they are adding. The alternative was
 measured too: declaring handlers ``async`` also serializes, but stalls the
 transport completely -- an unrelated tool waited 0.81 s during a 1.0 s block,
 against 0.02 s with this lock, because a sync handler on a worker thread leaves

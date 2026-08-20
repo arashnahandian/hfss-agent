@@ -257,14 +257,18 @@ def test_the_audit_log_loses_no_record_under_concurrent_tool_calls(
 ) -> None:
     """THE AUDIT-INTEGRITY PROPERTY, and it is the reason the lock sits here.
 
-    Measured before the lock: appending from multiple threads in one process
-    DROPPED records -- 400 expected, 390 written, with ``torn_tail`` False and
-    ``corrupt_lines`` empty, so the log looked complete while being short. The
-    writer's own docstring calls that outcome "worse than no log, because it
-    looks complete", and its accepted-limitations paragraph scopes its
-    single-writer assumption to "two server instances" -- two PROCESSES. The SDK
-    puts a second writer inside ONE process, which that paragraph never
-    contemplated.
+    Measured before the lock, and the loss is NONDETERMINISTIC: six runs of 400
+    records from 16 threads lost 11, 11, 14, 17, 15 and 8. One run in full: 389
+    parsed back, 11 lost, ``torn_tail`` False, ``corrupt_lines`` [5]. The full
+    reconciliation of those figures -- including why an earlier claim of "2
+    lines torn" alongside an empty ``corrupt_lines`` was impossible -- lives in
+    ``broker/audit/writer.py``; this docstring cites it rather than restating
+    it, because two independently written accounts of one measurement is how
+    the two figures came to disagree in the first place.
+
+    The writer's accepted-limitations paragraph scoped its single-writer
+    assumption to "two server instances" -- two PROCESSES. The SDK puts a
+    second writer inside ONE process, which that paragraph never contemplated.
 
     Every append in ``src/`` happens inside ``Broker.dispatch``, so a lock
     around the whole tool invocation covers all of them. This drives the REAL

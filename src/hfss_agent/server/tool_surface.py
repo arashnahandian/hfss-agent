@@ -27,12 +27,22 @@ row rather than derived: deriving it would mean importing and introspecting an
 assembler, and a test that computes the same thing the code computes proves
 nothing about whether either is right.
 
-THE DEFERRED ROWS ARE THE POINT OF THE FILE. Four §3 tools have nothing behind
-them yet. Recording them as "deferred, missing X" rather than omitting them is
-what lets a test assert that X is STILL missing -- so the day someone builds X,
-that test fails and forces this row to be updated, instead of the tool quietly
-never being registered. A list of what IS registered cannot do that; only a list
-of everything can.
+THE DEFERRED ROWS ARE THE POINT OF THE FILE. SIX of the seventeen are deferred;
+of those six, FIVE have nothing behind them at all and one (``validate_setup``)
+names an assembler that exists and is missing only the composition on top.
+Both numbers are stated because they answer different questions, and neither is
+a number to trust from prose: ``DEFERRED_TOOLS`` at the foot of this file
+derives the set from the rows, and
+``test_registered_and_deferred_partition_the_surface`` pins the split at 11 and
+6 against an independently written list of the seventeen §3 names. (This
+paragraph said "Four" until Part 11, which matched neither count -- in the one
+file whose job is making the deferrals reviewable.)
+
+Recording them as "deferred, missing X" rather than omitting them is what lets a
+test assert that X is STILL missing -- so the day someone builds X, that test
+fails and forces this row to be updated, instead of the tool quietly never being
+registered. A list of what IS registered cannot do that; only a list of
+everything can.
 
 TIERS ARE REQUIRED ON EVERY ROW, INCLUDING DEFERRED ONES, following
 ``CapabilitySpec.tier``'s structural trick: a required field with no default on
@@ -158,7 +168,16 @@ TOOL_SURFACE: tuple[ToolBinding, ...] = (
         name="attach",
         tier="safe",
         status="registered",
-        summary="Attach (attach-only) to a running AEDT process.",
+        # NAMES WHERE THE ARGUMENT COMES FROM, because nothing else does:
+        # ``list_aedt_processes`` is deferred, so no tool on this surface can
+        # enumerate process ids, and a client given only "attach to a process"
+        # has no way to obtain one. Said here as well as in the live
+        # instructions: a host may drop instructions, but a tool description
+        # is what a model reads at the moment it chooses to call this.
+        summary=(
+            "Attach (attach-only) to a running AEDT process. This server "
+            "cannot list process ids; obtain one from the operating system."
+        ),
         capability="attach",
     ),
     ToolBinding(
