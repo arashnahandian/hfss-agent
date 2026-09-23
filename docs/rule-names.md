@@ -1,10 +1,11 @@
 # Rule names and purposes
 
-The published half of the supplemental rule set. System Design §1.2 (E-2)
-requires that rule **names and stated purposes be public, published from the
-wrapper side**, while implementations live in the separate rule engine. This
-file is that publication, and it is deliberately the whole of it: a name and a
-purpose per rule, and nothing about how any of them reaches a conclusion.
+The published half of the supplemental rule set, and of the engine's one
+intent-evaluation check. System Design §1.2 (E-2) requires that rule **names
+and stated purposes be public, published from the wrapper side**, while
+implementations live in the separate rule engine. This file is that
+publication, and it is deliberately the whole of it: a name and a purpose per
+rule, and nothing about how any of them reaches a conclusion.
 
 The engine is a separately-distributed package, and **no integration with it
 exists in this repository today.** Nothing here imports, invokes, detects, or
@@ -13,11 +14,12 @@ code path that can tell a caller whether one is installed, and installing
 something today would not make the rules below run.
 
 What exists is the seam they will arrive through, which is real and is most of
-the contract: the versioned `DesignSnapshot` handed across it, and a `Finding`
-schema whose `FindingSource` admits `engine_rule` alongside the wrapper's own
-`gate`. The `validate_setup` tool that would carry an engine-presence notice is
-registered as **deferred**, and whether its `engine_status` field can be answered
-at all is an open judgment recorded against Step 3.3 — not a settled behaviour.
+the contract: the versioned `DesignSnapshot` handed across it — alongside
+the `MetricRecord`s computed from solved data — and a `Finding` schema whose
+`FindingSource` admits `engine_rule` alongside the wrapper's own `gate`. The
+`validate_setup` tool that would carry an engine-presence notice is registered
+as **deferred**, and whether its `engine_status` field can be answered at all
+is an open judgment recorded against Step 3.3 — not a settled behaviour.
 
 These names are published now because publishing them is a standing requirement
 on this side of the seam, independent of when the other side arrives.
@@ -32,7 +34,7 @@ compares them to the text below.
 
 The list is therefore **maintained by hand, and can drift.** If a purpose string
 is edited in the engine and not here, or here and not there, nothing detects it
-and nothing fails. Read the four entries below as a faithful hand copy of the
+and nothing fails. Read the entries below as a faithful hand copy of the
 engine's `RULE_PURPOSE` constants, which is what they are — not as a guarantee
 that the engine currently says the same words. That guarantee is not available
 from this side of the seam, so this document does not imply one.
@@ -87,6 +89,15 @@ publishing.
 - **`sweep_exists_under_setup`** — "Reports whether the sweep named in the selection is present under the selected setup in the design's own sweep list."
 - **`excitation_present`** — "Reports whether the design defines at least one excitation or port."
 - **`target_frequency_usable`** — "Reports whether the target frequency stated in the design intent is a usable number: finite, and greater than zero."
+
+## E-3: intent evaluation, not a V1 supplemental rule
+
+- **`interpret.threshold_at_target`** — "Compares the S11 or VSWR value at the target frequency stated in the design intent against the threshold stated there, and gives beside it, when available, the other of the two values at that target -- not judged against any threshold -- and the frequency of the lowest-S11 solved sample."
+
+E-3 is intent evaluation, a different category from the four E-2 supplemental
+rules above. It is published on the same terms as they are — a name and a
+stated purpose, and nothing about how it reaches a conclusion — but it is
+not one of them.
 
 ## What a rule reports
 

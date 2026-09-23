@@ -24,9 +24,10 @@ ever leaves the user's machine.
 This package is the sole component capable of touching HFSS, project
 files, the network, or the OS. It emits a structured, versioned, read-only
 design snapshot (plain JSON-serializable data — never live handles,
-sessions, paths, or callables) to an optional separately-distributed rule
-engine, which returns findings but holds no capabilities and executes
-nothing. The wrapper works standalone when the engine is absent
+sessions, paths, or callables), together with the metric records computed
+from the solved data, to an optional separately-distributed rule engine,
+which returns findings but holds no capabilities and executes nothing.
+The wrapper works standalone when the engine is absent
 (inspection + native validation + validity gates + open metric formulas),
 degrading gracefully and explicitly — never silently.
 
